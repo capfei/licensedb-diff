@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "ScanCode LicenseDB Matcher",
+  "version": "0.0.0",
+  "description": "Compare selected text with ScanCode LicenseDB.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "action": {
+    "default_icon": {
+      "16": "images/file-diff-16.png",
+      "48": "images/file-diff-48.png",
+      "128": "images/file-diff-128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"]
+    }
+  ]
+}

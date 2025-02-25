@@ -1,0 +1,48 @@
+/* content.css */
+#license-matcher-ui {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  width: 50%;
+  height: auto;
+  background-color: #fff;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  padding: 10px;
+  z-index: 10000;
+  overflow: auto;
+  display: none; /* Hidden by default */
+}
+
+#license-matcher-ui button {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  background: none;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+#license-matcher-ui h2 {
+  margin-top: 0;
+}
+
+#license-matcher-progress {
+  width: 0%;
+  height: 10px;
+  background-color: #4CAF50;
+  border-radius: 5px;
+}
+
+#license-matcher-dropdown {
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 5px;
+}
+
+#license-matcher-diff {
+  margin-top: 10px;
+  white-space: pre-wrap; /* Preserve line breaks in the diff */
+}
