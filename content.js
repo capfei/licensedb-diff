@@ -3,7 +3,7 @@ chrome.runtime.sendMessage({ action: 'contentScriptReady' });
 
 // Create a container for the UI
 const uiContainer = document.createElement('div');
-uiContainer.id = 'license-matcher-ui';
+uiContainer.id = 'license-diff-ui';
 
 // Add a close button
 const closeButton = document.createElement('button');
@@ -20,7 +20,7 @@ uiContainer.appendChild(title);
 
 // Add a status message
 const status = document.createElement('div');
-status.id = 'license-matcher-status';
+status.id = 'license-diff-status';
 uiContainer.appendChild(status);
 
 // Add a progress bar
@@ -30,25 +30,25 @@ progressBar.style.backgroundColor = '#ddd';
 progressBar.style.borderRadius = '5px';
 progressBar.style.marginBottom = '10px';
 progressBar.innerHTML = `
-  <div id="license-matcher-progress"></div>
+  <div id="license-diff-progress"></div>
 `;
 uiContainer.appendChild(progressBar);
 
 // Add a link for matches
 const linkDisplay = document.createElement('div');
-linkDisplay.id = 'license-matcher-url';
+linkDisplay.id = 'license-diff-url';
 
 // Add a dropdown for matches
 const dropdown = document.createElement('select');
-dropdown.id = 'license-matcher-dropdown';
+dropdown.id = 'license-diff-dropdown';
 dropdown.style.width = '100%';
 dropdown.style.marginBottom = '10px';
 dropdown.style.padding = '5px';
 dropdown.addEventListener('change', (event) => {
   const selectedMatch = matches.find(match => match.license === event.target.value);
   if (selectedMatch) {
-    document.getElementById('license-matcher-url').innerHTML = selectedMatch.link;
-    document.getElementById('license-matcher-diff').innerHTML = selectedMatch.diff;
+    document.getElementById('license-diff-url').innerHTML = selectedMatch.link;
+    document.getElementById('license-diff-display').innerHTML = selectedMatch.diff;
   }
 });
 uiContainer.appendChild(dropdown);
@@ -56,7 +56,7 @@ uiContainer.appendChild(linkDisplay);
 
 // Add a container for the diff
 const diffContainer = document.createElement('div');
-diffContainer.id = 'license-matcher-diff';
+diffContainer.id = 'license-diff-display';
 diffContainer.style.marginTop = '10px';
 uiContainer.appendChild(diffContainer);
 
@@ -76,14 +76,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.action === 'progressUpdate') {
     const { checked, total } = message.progress;
     const progressPercent = ((checked / total) * 100).toFixed(2);
-    document.getElementById('license-matcher-progress').style.width = `${progressPercent}%`;
-    document.getElementById('license-matcher-status').innerText = `Checked ${checked} of ${total} licenses...`;
+    document.getElementById('license-diff-progress').style.width = `${progressPercent}%`;
+    document.getElementById('license-diff-status').innerText = `Checked ${checked} of ${total} licenses...`;
     sendResponse({ success: true });
   } else if (message.action === 'showResults') {
     matches = message.matches;
 
     // Clear the dropdown
-    const dropdown = document.getElementById('license-matcher-dropdown');
+    const dropdown = document.getElementById('license-diff-dropdown');
     dropdown.innerHTML = '';
 
     // Add an option for each match
@@ -97,14 +97,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // Show the first match's diff by default
     if (matches.length > 0) {
-      document.getElementById('license-matcher-url').innerHTML = matches[0].link;
-      document.getElementById('license-matcher-diff').innerHTML = matches[0].diff;
+      document.getElementById('license-diff-url').innerHTML = matches[0].link;
+      document.getElementById('license-diff-display').innerHTML = matches[0].diff;
     }
 
-    document.getElementById('license-matcher-status').innerText = 'Comparison complete!';
+    document.getElementById('license-diff-status').innerText = 'Comparison complete!';
     sendResponse({ success: true });
   } else if (message.action === 'showError') {
-    document.getElementById('license-matcher-status').innerText = `Error: ${message.error}`;
+    document.getElementById('license-diff-status').innerText = `Error: ${message.error}`;
     sendResponse({ success: true });
   }
 

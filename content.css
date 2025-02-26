@@ -1,5 +1,5 @@
 /* content.css */
-#license-matcher-ui {
+#license-diff-ui {
   position: fixed;
   top: 20px;
   right: 20px;
@@ -15,7 +15,7 @@
   display: none; /* Hidden by default */
 }
 
-#license-matcher-ui button {
+#license-diff-ui button {
   position: absolute;
   top: 5px;
   right: 5px;
@@ -25,24 +25,24 @@
   cursor: pointer;
 }
 
-#license-matcher-ui h2 {
+#license-diff-ui h2 {
   margin-top: 0;
 }
 
-#license-matcher-progress {
+#license-diff-progress {
   width: 0%;
   height: 10px;
   background-color: #4CAF50;
   border-radius: 5px;
 }
 
-#license-matcher-dropdown {
+#license-diff-dropdown {
   width: 100%;
   margin-bottom: 10px;
   padding: 5px;
 }
 
-#license-matcher-diff {
+#license-diff-display {
   margin-top: 10px;
   white-space: pre-wrap; /* Preserve line breaks in the diff */
 }

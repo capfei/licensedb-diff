@@ -1,6 +1,6 @@
 console.log('Background script loaded.');
 
-chrome.action.setBadgeText({ text: 'Match' });
+chrome.action.setBadgeText({ text: 'Diff' });
 
 
 var tabId;
