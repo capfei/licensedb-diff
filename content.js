@@ -14,8 +14,8 @@ closeButton.addEventListener('click', () => {
 uiContainer.appendChild(closeButton);
 
 // Add a title
-const title = document.createElement('h2');
-title.innerText = 'License Matcher';
+const title = document.createElement('h4');
+title.innerText = 'Licenses';
 uiContainer.appendChild(title);
 
 // Add a status message
