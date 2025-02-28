@@ -2,8 +2,10 @@ console.log('Background script loaded.');
 
 chrome.action.setBadgeText({ text: 'Diff' });
 
+import DiffMatchPatch from "./diff_match_patch.js";
 
 var tabId;
+var dmp = new DiffMatchPatch();
 
 // Function to fetch data with IndexedDB caching
 async function fetchWithCache(url, cacheKey, storeName) {
@@ -169,19 +171,6 @@ function generateDiff(text1, text2) {
   return diff.trim(); // Remove the trailing newline
 }
 
-/* // Function to generate a diff
-function generateDiff(text1, text2) {
-  let diff = '';
-  for (let i = 0; i < Math.max(text1.length, text2.length); i++) {
-    if (text1[i] === text2[i]) {
-      diff += text1[i];
-    } else {
-      diff += `<span style="background:#ffe6e6;text-decoration:line-through">${text2[i] || ''}</span><span style="background:#e6ffe6;text-decoration:underline">${text1[i] || ''}</span>`;
-    }
-  }
-  return diff;
-} */
-
 // Function to fetch licenses and compare text
 async function fetchLicenses(text, sendProgress) {
   // Fetch the index.json file with caching
@@ -233,13 +222,16 @@ async function fetchLicenses(text, sendProgress) {
 
           // Calculate the match score
           const score = calculateCosineSimilarity(text, licenseText);
-          if (score >= 20) { // Show results with at least 20% match
+          if (score >= 50) { // Get results with at least 50% match
+            var d = dmp.diff_main(text, licenseText); // diff array
+            dmp.diff_cleanupSemantic(d); // diff semantic cleanup
             matches.push({
               license: license.license_key,
               name: licenseName,
               spdx: license.spdx_license_key,
               score: score.toFixed(2),
-              diff: generateDiff(text, licenseText) // Include the diff
+              diff: dmp.diff_prettyHtml(d)
+              //diff: generateDiff(text, licenseText) // Include the diff
             });
           }
 

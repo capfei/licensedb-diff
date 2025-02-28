@@ -91,7 +91,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const option = document.createElement('option');
       option.value = match.license;
       option.text = `${match.license} (${match.score}% match)`;
-      match.link = `<a href="https://scancode-licensedb.aboutcode.org/${match.license}.html" target="_blank">${match.name} (${match.spdx})</a>`;
+      match.link = `<a href="https://scancode-licensedb.aboutcode.org/${match.license}.html" target="_blank">${match.name}</a> (${match.spdx})`;
       dropdown.appendChild(option);
     });
 
