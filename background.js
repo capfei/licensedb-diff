@@ -4,7 +4,7 @@ chrome.action.setBadgeText({ text: 'Diff' });
 
 import DiffMatchPatch from "./diff_match_patch.js";
 
-var tabId;
+var originTabId; // Store the ID of the tab that initiated the license check
 var dmp = new DiffMatchPatch();
 
 // Function to fetch data with IndexedDB caching
@@ -110,65 +110,19 @@ function calculateCosineSimilarity(text1, text2) {
   return similarity * 100;
 }
 
-function generateDiff(text1, text2) {
-  // Split the texts into lines
-  const lines1 = text1.split('\n');
-  const lines2 = text2.split('\n');
-
-  let diff = '';
-
-  // Compare line by line
-  for (let lineIndex = 0; lineIndex < Math.max(lines1.length, lines2.length); lineIndex++) {
-    const line1 = lines1[lineIndex] || '';
-    const line2 = lines2[lineIndex] || '';
-
-    // Split each line into words
-    const words1 = line1.split(' ');
-    const words2 = line2.split(' ');
-
-    let lineDiff = '';
-    let i = 0;
-    let j = 0;
-
-    // Compare word by word within the line
-    while (i < words1.length || j < words2.length) {
-      if (i < words1.length && j < words2.length && words1[i] === words2[j]) {
-        // If the words are the same, add them to the lineDiff
-        lineDiff += words1[i] + ' ';
-        i++;
-        j++;
+// Helper function to send messages to a specific tab
+function sendMessageToTab(tabId, message) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.sendMessage(tabId, message, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error(`Error sending message to tab ${tabId}:`, chrome.runtime.lastError);
+        reject(chrome.runtime.lastError);
       } else {
-        // Start of a difference block
-        let deleted = '';
-        let inserted = '';
-
-        // Collect deleted words (from text2)
-        while (j < words2.length && (i >= words1.length || words1[i] !== words2[j])) {
-          deleted += words2[j] + ' ';
-          j++;
-        }
-
-        // Collect inserted words (from text1)
-        while (i < words1.length && (j >= words2.length || words1[i] !== words2[j])) {
-          inserted += words1[i] + ' ';
-          i++;
-        }
-
-        // Add the deleted and inserted phrases to the lineDiff
-        if (deleted) {
-          lineDiff += `<span style="background:#ffe6e6;text-decoration:line-through">${deleted.trim()}</span> `;
-        }
-        if (inserted) {
-          lineDiff += `<span style="background:#e6ffe6;text-decoration:underline">${inserted.trim()}</span> `;
-        }
+        console.log(`Message sent to tab ${tabId}:`, message.action);
+        resolve(response);
       }
-    }
-
-    // Add the lineDiff to the overall diff
-    diff += lineDiff.trim() + '\n';
-  }
-
-  return diff.trim(); // Remove the trailing newline
+    });
+  });
 }
 
 // Function to fetch licenses and compare text
@@ -184,11 +138,6 @@ async function fetchLicenses(text, sendProgress) {
     return obj.is_deprecated !== true;
   });
 
-/*   Object.entries(licenses).forEach(([key, value]) => {
-    if (key === "is_deprecated" && value == true) {
-        delete licenses[key]
-    }
-  }); */
   console.log('Fetched licenses metadata:', licenses);
 
   const totalLicenses = licenses.length;
@@ -196,7 +145,7 @@ async function fetchLicenses(text, sendProgress) {
 
   // Fetch the text for each license and compare
   const matches = [];
-  const batchSize = 10; // Process licenses in batches of 10
+  const batchSize = 20; // Process licenses in batches of 20
 
   for (let i = 0; i < licenses.length; i += batchSize) {
     const batch = licenses.slice(i, i + batchSize);
@@ -231,7 +180,6 @@ async function fetchLicenses(text, sendProgress) {
               spdx: license.spdx_license_key,
               score: score.toFixed(2),
               diff: dmp.diff_prettyHtml(d)
-              //diff: generateDiff(text, licenseText) // Include the diff
             });
           }
 
@@ -286,100 +234,68 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'checkLicense') {
     const selectedText = request.text;
-
-    // Show the UI
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (chrome.runtime.lastError) {
-        console.error('Error querying tabs:', chrome.runtime.lastError);
-        sendResponse({ error: chrome.runtime.lastError.message });
-        return;
-      }
-
-      tabId = tabs[0].id;
-      console.log('Sending message to tab:', tabId);
-
-      chrome.tabs.sendMessage(tabId, { action: 'showUI' }, (response) => {
-        if (chrome.runtime.lastError) {
-          console.error('Error sending message to content script:', chrome.runtime.lastError);
-          sendResponse({ error: chrome.runtime.lastError.message });
-          return;
-        }
-        console.log('UI shown:', response);
-        sendResponse({ success: true });
-      });
-    });
-
-    // Function to send progress updates
-    const sendProgress = (progress) => {
+    
+    // Store the tab ID that initiated the request
+    originTabId = sender.tab ? sender.tab.id : null;
+    
+    if (!originTabId) {
+      // If no tab ID is available (e.g., sent from popup), get the current active tab
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (chrome.runtime.lastError) {
-          console.error('Error querying tabs:', chrome.runtime.lastError);
+        if (chrome.runtime.lastError || !tabs || tabs.length === 0) {
+          console.error('Error getting active tab:', chrome.runtime.lastError);
+          sendResponse({ error: 'Failed to identify origin tab' });
           return;
         }
-
-        tabId = tabs[0].id;
-        console.log('Sending progress update to tab:', tabId);
-
-        chrome.tabs.sendMessage(tabId, { action: 'progressUpdate', progress }, (response) => {
-          if (chrome.runtime.lastError) {
-            console.error('Error sending progress update:', chrome.runtime.lastError);
-            return;
-          }
-          console.log('Progress update sent:', response);
-        });
+        
+        originTabId = tabs[0].id;
+        processLicenseCheck(selectedText, sendResponse);
       });
-    };
-
-    fetchLicenses(selectedText, sendProgress)
-      .then(matches => {
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (chrome.runtime.lastError) {
-            console.error('Error querying tabs:', chrome.runtime.lastError);
-            sendResponse({ error: chrome.runtime.lastError.message });
-            return;
-          }
-
-          tabId = tabs[0].id;
-          console.log('Sending results to tab:', tabId);
-
-          chrome.tabs.sendMessage(tabId, { action: 'showResults', matches }, (response) => {
-            if (chrome.runtime.lastError) {
-              console.error('Error sending results:', chrome.runtime.lastError);
-              sendResponse({ error: chrome.runtime.lastError.message });
-              return;
-            }
-            console.log('Results sent:', response);
-            sendResponse({ success: true });
-          });
-        });
-      })
-      .catch(error => {
-        console.error('Error fetching licenses:', error);
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (chrome.runtime.lastError) {
-            console.error('Error querying tabs:', chrome.runtime.lastError);
-            sendResponse({ error: chrome.runtime.lastError.message });
-            return;
-          }
-
-          tabId = tabs[0].id;
-          console.log('Sending error message to tab:', tabId);
-
-          chrome.tabs.sendMessage(tabId, { action: 'showError', error: error.message }, (response) => {
-            if (chrome.runtime.lastError) {
-              console.error('Error sending error message:', chrome.runtime.lastError);
-              sendResponse({ error: chrome.runtime.lastError.message });
-              return;
-            }
-            console.log('Error message sent:', response);
-            sendResponse({ success: true });
-          });
-        });
-      });
-
+    } else {
+      // We have the sender tab ID
+      processLicenseCheck(selectedText, sendResponse);
+    }
+    
     return true; // Required to use sendResponse asynchronously
   }
 });
+
+// New function to handle the license checking process
+function processLicenseCheck(selectedText, sendResponse) {
+  console.log('Processing license check for tab:', originTabId);
+  
+  // Show the UI in the originating tab
+  sendMessageToTab(originTabId, { action: 'showUI' })
+    .then(() => {
+      // Function to send progress updates to the originating tab
+      const sendProgress = (progress) => {
+        sendMessageToTab(originTabId, { 
+          action: 'progressUpdate', 
+          progress 
+        }).catch(err => console.error('Error sending progress update:', err));
+      };
+      
+      // Fetch licenses and send results to the originating tab
+      return fetchLicenses(selectedText, sendProgress);
+    })
+    .then(matches => {
+      return sendMessageToTab(originTabId, { 
+        action: 'showResults', 
+        matches 
+      });
+    })
+    .then(() => {
+      sendResponse({ success: true });
+    })
+    .catch(error => {
+      console.error('Error in license check process:', error);
+      sendMessageToTab(originTabId, { 
+        action: 'showError', 
+        error: error.message 
+      }).finally(() => {
+        sendResponse({ error: error.message });
+      });
+    });
+}
 
 chrome.action.onClicked.addListener(tab => {
   chrome.scripting.executeScript({

@@ -1,17 +1,22 @@
-/* content.css */
 #license-diff-ui {
   position: fixed;
   top: 20px;
   right: 20px;
   width: 50%;
   height: auto;
+  max-height: 100%; /* Fallback */
+  max-height: -moz-available;
+  max-height: -webkit-fill-available;
+  max-height: fill-available;
+  max-height: stretch; /* Latest specification */
   background-color: #fff;
   border: 1px solid #ccc;
   border-radius: 5px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
   padding: 10px;
-  z-index: 10000;
+  z-index: auto;
   overflow: auto;
+  flex-direction: column;
   display: none; /* Hidden by default */
 }
 
@@ -44,5 +49,5 @@
 
 #license-diff-display {
   margin-top: 10px;
-  white-space: pre-wrap; /* Preserve line breaks in the diff */
+  overflow-y: auto;
 }

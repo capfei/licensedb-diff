@@ -3,7 +3,16 @@
   "name": "ScanCode LicenseDB Diff",
   "version": "0.0.0",
   "description": "Compare selected text with ScanCode LicenseDB.",
-  "permissions": ["activeTab", "scripting", "storage"],
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
   "action": {
     "default_icon": {
       "16": "images/file-diff-16.png",
@@ -12,16 +21,16 @@
       "128": "images/file-diff-128.png"
     }
   },
-  "icons": { "128": "images/file-diff-128.png" },
-  "background": {
-    "service_worker": "background.js",
-    "type": "module"
-  },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
       "css": ["content.css"]
     }
-  ]
+  ],
+  "icons": {
+    "16": "images/file-diff-16.png",
+    "48": "images/file-diff-48.png",
+    "128": "images/file-diff-128.png"
+  }
 }

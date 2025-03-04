@@ -71,7 +71,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('Message received in content script:', message);
 
   if (message.action === 'showUI') {
-    uiContainer.style.display = 'block';
+    uiContainer.style.display = 'flex';
     sendResponse({ success: true });
   } else if (message.action === 'progressUpdate') {
     const { checked, total } = message.progress;
