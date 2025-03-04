@@ -9,9 +9,11 @@
     "scripting",
     "tabs"
   ],
+  "host_permissions": [
+    "https://scancode-licensedb.aboutcode.org/*"
+  ],
   "background": {
-    "service_worker": "background.js",
-    "type": "module"
+    "service_worker": "background.js"
   },
   "action": {
     "default_icon": {
@@ -24,13 +26,20 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "css": ["content.css"]
+      "js": ["diff_match_patch.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
     }
   ],
   "icons": {
     "16": "images/file-diff-16.png",
     "48": "images/file-diff-48.png",
     "128": "images/file-diff-128.png"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["diff_match_patch.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }
