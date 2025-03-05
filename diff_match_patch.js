@@ -2224,4 +2224,17 @@ diff_match_patch.DIFF_DELETE = DIFF_DELETE;
 diff_match_patch.DIFF_INSERT = DIFF_INSERT;
 diff_match_patch.DIFF_EQUAL = DIFF_EQUAL;
 
-export default diff_match_patch;
+const DiffMatchPatch = diff_match_patch;
+
+// For ES modules
+export default DiffMatchPatch;
+
+// For CommonJS
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = DiffMatchPatch;
+}
+
+// For global use
+if (typeof window !== 'undefined') {
+  window.DiffMatchPatch = DiffMatchPatch;
+}

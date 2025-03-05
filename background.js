@@ -1,41 +1,12 @@
+
 console.log('Background script loaded.');
 
 chrome.action.setBadgeText({ text: 'Diff' });
 
-// Initialize DiffMatchPatch without using dynamic imports
-let dmp;
-
-// Create an initialization function that doesn't use import()
-function initializeDependencies() {
-  try {
-    // Create our own minimal implementation of DiffMatchPatch for the background script
-    // This avoids the need to import the full library
-    dmp = {
-      diff_main: function(text1, text2) {
-        // We'll only use this for checking if there's a difference, not for display
-        return text1 === text2 ? [] : [[-1, text1], [1, text2]];
-      },
-      diff_cleanupSemantic: function() {
-        // No-op in this simplified version
-      },
-      diff_prettyHtml: function(diff) {
-        // Simple HTML representation - actual diff display will happen in content script
-        return `<div>Detailed diff will be generated in the UI</div>`;
-      }
-    };
-    
-    console.log('Using simplified DiffMatchPatch implementation in background script');
-    return true;
-  } catch (error) {
-    console.error('Error initializing dependencies:', error);
-    return false;
-  }
-}
+import DiffMatchPatch from "./diff_match_patch.js";
 
 var originTabId; // Store the ID of the tab that initiated the license check
-
-// Run initialization when the script loads
-initializeDependencies();
+var dmp = new DiffMatchPatch();
 
 // Database version - increment when structure changes
 const DB_VERSION = 2;
@@ -268,7 +239,6 @@ async function fetchWithCache(url, cacheKey, storeName) {
   });
 }
 
-// Helper function to send messages to a specific tab with better error handling
 function sendMessageToTab(tabId, message) {
   return new Promise((resolve, reject) => {
     try {
@@ -444,15 +414,14 @@ async function fetchLicenses(text, sendProgress) {
             const score = calculateCosineSimilarity(textVector, licenseVector);
             
             if (score >= 50) { // Get results with at least 50% match
-              // Don't generate the diff in the background script
-              // Just prepare the necessary data for the content script
+              var d = dmp.diff_main(text,licenseText);
+              dmp.diff_cleanupSemantic(d);
               return {
                 license: license.license_key,
                 name: licenseName,
                 spdx: license.spdx_license_key,
                 score: score.toFixed(2),
-                // Send the full text so content script can generate the diff
-                licenseText: licenseText
+                diff: dmp.diff_prettyHtml(d)
               };
             }
             
