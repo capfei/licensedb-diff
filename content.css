@@ -1,4 +1,5 @@
 #license-diff-ui {
+  font-family: sans-serif;
   position: fixed;
   top: 20px;
   right: 20px;
@@ -30,7 +31,7 @@
   cursor: pointer;
 }
 
-#license-diff-ui h2 {
+#license-diff-ui h3 {
   margin-top: 0;
 }
 
