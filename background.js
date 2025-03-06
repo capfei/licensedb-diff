@@ -1,4 +1,3 @@
-
 console.log('Background script loaded.');
 
 chrome.action.setBadgeText({ text: 'Diff' });
@@ -358,6 +357,9 @@ async function fetchLicenses(text, sendProgress) {
     const licenses = licenseList.filter(obj => !obj.is_deprecated);
     console.log('Fetched licenses metadata:', licenses.length);
     
+    // Maximum number of matches to show in dropdown
+    const MAX_RESULTS = 10;
+    
     // Create vector for the selected text
     const textVector = createTextVector(text);
     
@@ -370,11 +372,12 @@ async function fetchLicenses(text, sendProgress) {
     
     // Process licenses in batches for better performance
     const batchSize = 30;
-    const allMatches = [];
+    const potentialMatches = [];
     
     // Store vectors to avoid recalculating
     const licenseVectors = {};
     
+    // PHASE 1: Score all licenses without generating diffs
     for (let i = 0; i < licenses.length; i += batchSize) {
       const batch = licenses.slice(i, i + batchSize);
       
@@ -413,15 +416,13 @@ async function fetchLicenses(text, sendProgress) {
             // Calculate the match score with full cosine similarity
             const score = calculateCosineSimilarity(textVector, licenseVector);
             
-            if (score >= 50) { // Get results with at least 50% match
-              var d = dmp.diff_main(text,licenseText);
-              dmp.diff_cleanupSemantic(d);
+            if (score >= 20) { // Get results with at least 20% match
               return {
                 license: license.license_key,
                 name: licenseName,
                 spdx: license.spdx_license_key,
                 score: score.toFixed(2),
-                diff: dmp.diff_prettyHtml(d)
+                licenseText: licenseText  // Store text for later diff generation
               };
             }
             
@@ -435,7 +436,7 @@ async function fetchLicenses(text, sendProgress) {
       
       // Filter out nulls and add matches
       const validMatches = batchResults.filter(Boolean);
-      allMatches.push(...validMatches);
+      potentialMatches.push(...validMatches);
       
       // Update progress
       checkedLicenses += batch.length;
@@ -449,10 +450,29 @@ async function fetchLicenses(text, sendProgress) {
     }
 
     // Sort all matches by score (highest first)
-    allMatches.sort((a, b) => b.score - a.score);
+    potentialMatches.sort((a, b) => b.score - a.score);
 
-    // Limit the number of matches to 10
-    const topMatches = allMatches.slice(0, 10);
+    // PHASE 2: Only generate diffs for the top matches
+    const topMatches = potentialMatches.slice(0, MAX_RESULTS);
+    
+    // Generate diffs only for top matches
+    sendProgress({ 
+      checked: checkedLicenses, 
+      total: totalLicenses,
+      promising,
+      message: "Generating diffs for top matches..."
+    });
+    
+    // Process diffs in sequence to avoid high memory usage
+    for (let i = 0; i < topMatches.length; i++) {
+      const match = topMatches[i];
+      // Generate diff using DiffMatchPatch
+      var d = dmp.diff_main(text, match.licenseText);
+      dmp.diff_cleanupSemantic(d);
+      match.diff = dmp.diff_prettyHtml(d);
+      // Remove the license text to save memory
+      delete match.licenseText;
+    }
     
     // Add link property to each match
     topMatches.forEach(match => {
