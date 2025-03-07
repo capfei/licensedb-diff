@@ -294,6 +294,7 @@ function createTextVector(text) {
 
 // Calculate cosine similarity between two vectors (moved from worker)
 function calculateCosineSimilarity(vector1, vector2) {
+  // This function is kept for reference but no longer used
   let dotProduct = 0;
   let magnitude1 = 0;
   let magnitude2 = 0;
@@ -322,6 +323,27 @@ function calculateCosineSimilarity(vector1, vector2) {
   return (dotProduct / (magnitude1 * magnitude2)) * 100;
 }
 
+// New function to calculate Dice coefficient for more accurate percentages
+function calculateDiceCoefficient(vector1, vector2) {
+  // Get the sets of terms
+  const keys1 = new Set(Object.keys(vector1));
+  const keys2 = new Set(Object.keys(vector2));
+  
+  // Calculate intersection size
+  let intersectionSize = 0;
+  for (const key of keys1) {
+    if (keys2.has(key)) {
+      intersectionSize++;
+    }
+  }
+  
+  // Calculate Dice coefficient: 2*|intersection| / (|set1| + |set2|)
+  const diceCoefficient = (2 * intersectionSize) / (keys1.size + keys2.size);
+  
+  // Convert to percentage
+  return diceCoefficient * 100;
+}
+
 // Quick similarity check for pre-filtering (moved from worker)
 function quickSimilarityCheck(textVector, licenseVector) {
   // Check if vectors share a minimum percentage of terms
@@ -334,14 +356,18 @@ function quickSimilarityCheck(textVector, licenseVector) {
     return false;
   }
   
-  // Check common terms
-  let common = 0;
-  const minRequired = Math.min(textKeys.length, licenseKeys.length) * 0.3; // 30% overlap minimum
+  // Create sets for faster intersection calculation
+  const textKeySet = new Set(textKeys);
+  const licenseKeySet = new Set(licenseKeys);
   
-  for (const key of textKeys) {
-    if (licenseVector[key]) {
-      common++;
-      if (common >= minRequired) {
+  // Calculate a quick rough estimate of Dice coefficient
+  let intersectionSize = 0;
+  let minIntersectionNeeded = Math.min(textKeySet.size, licenseKeySet.size) * 0.2; // Reduced from 0.3
+  
+  for (const key of textKeySet) {
+    if (licenseKeySet.has(key)) {
+      intersectionSize++;
+      if (intersectionSize >= minIntersectionNeeded) {
         return true;
       }
     }
@@ -441,10 +467,11 @@ async function fetchLicenses(text, sendProgress) {
             // Candidate is promising - do more detailed comparison
             promising++;
             
-            // Calculate the match score with full cosine similarity
-            const score = calculateCosineSimilarity(textVector, licenseVector);
+            // Calculate the match score with Dice coefficient instead of cosine similarity
+            const score = calculateDiceCoefficient(textVector, licenseVector);
             
-            if (score >= 20) { // Get results with at least 20% match
+            // Lower threshold since Dice may give lower values
+            if (score >= 15) { // Get results with at least 15% match using Dice
               return {
                 license: license.license_key,
                 name: licenseName,
