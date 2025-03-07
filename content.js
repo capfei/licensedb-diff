@@ -1,19 +1,5 @@
 console.log('Content script loaded.');
 
-// Notify the background script that the content script is ready
-try {
-  chrome.runtime.sendMessage({ action: 'contentScriptReady' }, response => {
-    if (chrome.runtime.lastError) {
-      // It's okay if this fails, just log it
-      console.log('Background script not ready yet:', chrome.runtime.lastError.message);
-    } else {
-      console.log('Background script acknowledged content script is ready');
-    }
-  });
-} catch (err) {
-  console.warn('Error notifying background script:', err);
-}
-
 // Create a container for the UI
 const uiContainer = document.createElement('div');
 uiContainer.id = 'license-diff-ui';
@@ -81,8 +67,6 @@ let matches = [];
 
 // Listen for messages from the background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('Message received in content script:', message);
-
   if (message.action === 'showUI') {
     uiContainer.style.display = 'flex';
     sendResponse({ success: true });
@@ -138,20 +122,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true; // Required to use sendResponse asynchronously
 });
 
-chrome.runtime.onConnect.addListener((port) => {
-  port.onMessage.addListener((msg) => {
-    // Notify the background script that the content script is ready
-    try {
-      chrome.runtime.sendMessage({ action: 'contentScriptReady' }, response => {
-        if (chrome.runtime.lastError) {
-          // It's okay if this fails, just log it
-          console.log('Background script not ready yet:', chrome.runtime.lastError.message);
-        } else {
-          console.log('Background script acknowledged content script is ready');
-        }
-      });
-    } catch (err) {
-      console.warn('Error notifying background script:', err);
-    }
-  });
-});
+// Notify the background script that the content script is ready
+try {
+  chrome.runtime.sendMessage({ action: 'contentScriptReady' });
+} catch (err) {
+  console.warn('Error notifying background script:', err);
+}

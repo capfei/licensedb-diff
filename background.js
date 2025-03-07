@@ -26,7 +26,6 @@ function openDatabase() {
       if (!db.objectStoreNames.contains('vectors')) {
         db.createObjectStore('vectors', { keyPath: 'license_key' });
       }
-      // Add a new store to track initialization status
       if (!db.objectStoreNames.contains('status')) {
         db.createObjectStore('status', { keyPath: 'id' });
       }
@@ -42,7 +41,7 @@ function openDatabase() {
   });
 }
 
-// New function to check if database is initialized
+// Check if database is initialized
 async function isDatabaseInitialized() {
   try {
     const db = await openDatabase();
@@ -67,7 +66,7 @@ async function isDatabaseInitialized() {
   }
 }
 
-// New function to mark database as initialized
+// Mark database as initialized
 async function markDatabaseInitialized() {
   try {
     const db = await openDatabase();
@@ -169,12 +168,11 @@ async function preloadLicenseDatabase() {
       const percentComplete = Math.round((processed / totalLicenses) * 100);
       
       // Update badge to show progress
-      chrome.action.setBadgeText({ text: `Initializing: ${percentComplete}%` });
+      chrome.action.setBadgeText({ text: `${percentComplete}%` });
       
       console.log(`License initialization progress: ${processed}/${totalLicenses} (${percentComplete}%)`);
     }
     
-    console.log(`License database initialization completed. Processed ${processed} licenses with ${failures} failures.`);
     // Mark database as initialized
     await markDatabaseInitialized();
     
@@ -182,7 +180,7 @@ async function preloadLicenseDatabase() {
     chrome.action.setBadgeText({ text: 'Diff' });
     chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });  // Green for success
     
-    console.log('License database initialization completed successfully');
+    console.log(`License database initialization completed. Processed ${processed} licenses with ${failures} failures.`);
     return true;
   } catch (error) {
     console.error('Error initializing license database:', error);
@@ -203,7 +201,6 @@ async function fetchWithCache(url, cacheKey, storeName) {
 
     request.onsuccess = (event) => {
       if (event.target.result) {
-        console.log(`Using cached data for ${cacheKey}`);
         resolve(event.target.result.data);
       } else {
         // Fetch from the network
@@ -217,7 +214,6 @@ async function fetchWithCache(url, cacheKey, storeName) {
             const contentType = response.headers.get('content-type');
             if (!contentType || !contentType.includes('application/json')) {
               console.warn(`Warning: ${url} returned non-JSON content type: ${contentType}`);
-              // Continue anyway, but log the warning
             }
             
             return response.text().then(text => {
@@ -238,7 +234,6 @@ async function fetchWithCache(url, cacheKey, storeName) {
             const putRequest = putStore.put({ [storeName === 'metadata' ? 'id' : 'license_key']: cacheKey, data });
 
             putRequest.onsuccess = () => {
-              console.log(`Cached data for ${cacheKey}`);
               resolve(data);
             };
 
@@ -264,21 +259,20 @@ function sendMessageToTab(tabId, message) {
     try {
       chrome.tabs.sendMessage(tabId, message, (response) => {
         if (chrome.runtime.lastError) {
-          console.error(`Error sending message to tab ${tabId}:`, chrome.runtime.lastError);
-          reject(chrome.runtime.lastError);
+          console.error(`Error sending message to tab ${tabId}:`, chrome.runtime.lastError.message || 'Unknown error');
+          reject(new Error(chrome.runtime.lastError.message || 'Error communicating with tab'));
         } else {
-          console.log(`Message sent to tab ${tabId}:`, message.action, response);
           resolve(response);
         }
       });
     } catch (error) {
-      console.error(`Exception sending message to tab ${tabId}:`, error);
-      reject(error);
+      console.error(`Exception sending message to tab ${tabId}:`, error.message || error);
+      reject(new Error(error.message || 'Unknown error sending message'));
     }
   });
 }
 
-// Create a term frequency map for the text (moved from worker)
+// Create a term frequency map for the text
 function createTextVector(text) {
   // Normalize text: lowercase, remove punctuation, split into words
   const words = text.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(word => word.length > 0);
@@ -292,38 +286,7 @@ function createTextVector(text) {
   return vector;
 }
 
-// Calculate cosine similarity between two vectors (moved from worker)
-function calculateCosineSimilarity(vector1, vector2) {
-  // This function is kept for reference but no longer used
-  let dotProduct = 0;
-  let magnitude1 = 0;
-  let magnitude2 = 0;
-  
-  // Calculate dot product and magnitudes
-  const allKeys = new Set([...Object.keys(vector1), ...Object.keys(vector2)]);
-  
-  for (const key of allKeys) {
-    const val1 = vector1[key] || 0;
-    const val2 = vector2[key] || 0;
-    
-    dotProduct += val1 * val2;
-    magnitude1 += val1 * val1;
-    magnitude2 += val2 * val2;
-  }
-  
-  magnitude1 = Math.sqrt(magnitude1);
-  magnitude2 = Math.sqrt(magnitude2);
-  
-  // Prevent division by zero
-  if (magnitude1 === 0 || magnitude2 === 0) {
-    return 0;
-  }
-  
-  // Calculate the similarity
-  return (dotProduct / (magnitude1 * magnitude2)) * 100;
-}
-
-// New function to calculate Dice coefficient for more accurate percentages
+// Calculate Dice coefficient for text similarity
 function calculateDiceCoefficient(vector1, vector2) {
   // Get the sets of terms
   const keys1 = new Set(Object.keys(vector1));
@@ -344,7 +307,7 @@ function calculateDiceCoefficient(vector1, vector2) {
   return diceCoefficient * 100;
 }
 
-// Quick similarity check for pre-filtering (moved from worker)
+// Quick similarity check for pre-filtering
 function quickSimilarityCheck(textVector, licenseVector) {
   // Check if vectors share a minimum percentage of terms
   const textKeys = Object.keys(textVector);
@@ -362,7 +325,7 @@ function quickSimilarityCheck(textVector, licenseVector) {
   
   // Calculate a quick rough estimate of Dice coefficient
   let intersectionSize = 0;
-  let minIntersectionNeeded = Math.min(textKeySet.size, licenseKeySet.size) * 0.2; // Reduced from 0.3
+  let minIntersectionNeeded = Math.min(textKeySet.size, licenseKeySet.size) * 0.2;
   
   for (const key of textKeySet) {
     if (licenseKeySet.has(key)) {
@@ -376,7 +339,7 @@ function quickSimilarityCheck(textVector, licenseVector) {
   return false;
 }
 
-// Function to fetch licenses and compare text - updated to avoid DiffMatchPatch issues
+// Function to fetch licenses and compare text
 async function fetchLicenses(text, sendProgress) {
   // Check if database is initialized
   const isInitialized = await isDatabaseInitialized();
@@ -402,7 +365,6 @@ async function fetchLicenses(text, sendProgress) {
 
     // Filter out deprecated licenses
     const licenses = licenseList.filter(obj => !obj.is_deprecated);
-    console.log('Fetched licenses metadata:', licenses.length);
     
     // Maximum number of matches to show in dropdown
     const MAX_RESULTS = 10;
@@ -451,7 +413,6 @@ async function fetchLicenses(text, sendProgress) {
             const licenseName = licenseData.name;
 
             if (!licenseText) {
-              console.warn(`License ${license.license_key} is missing text. Skipping.`);
               return null;
             }
             
@@ -467,10 +428,9 @@ async function fetchLicenses(text, sendProgress) {
             // Candidate is promising - do more detailed comparison
             promising++;
             
-            // Calculate the match score with Dice coefficient instead of cosine similarity
+            // Calculate the match score with Dice coefficient
             const score = calculateDiceCoefficient(textVector, licenseVector);
             
-            // Lower threshold since Dice may give lower values
             if (score >= 15) { // Get results with at least 15% match using Dice
               return {
                 license: license.license_key,
@@ -496,7 +456,7 @@ async function fetchLicenses(text, sendProgress) {
       // Update progress
       checkedLicenses += batch.length;
       
-      // Update progress WITHOUT partial results
+      // Update progress
       sendProgress({ 
         checked: checkedLicenses, 
         total: totalLicenses,
@@ -541,11 +501,10 @@ async function fetchLicenses(text, sendProgress) {
   }
 }
 
-// Fix for checkedLicenses function
+// Function to get selected text and send to background script
 function checkedLicenses() {
   try {
     const selectedText = window.getSelection().toString();
-    console.log('Selected text:', selectedText);
 
     if (selectedText) {
       chrome.runtime.sendMessage({ action: 'checkLicense', text: selectedText });
@@ -555,70 +514,10 @@ function checkedLicenses() {
   } catch (error) {
     console.error('Error in checkedLicenses:', error);
   }
-  // No sendResponse here since it's injected
-}
-
-// Improved connect function with error handling
-function connect() {
-  return new Promise((resolve) => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (chrome.runtime.lastError || !tabs || tabs.length === 0) {
-        console.warn('No active tab found for connection');
-        resolve(false);
-        return;
-      }
-
-      // Check if we can inject content scripts in this tab
-      const tab = tabs[0];
-      const url = tab.url || '';
-      
-      // Skip chrome:// pages, extension pages, etc.
-      if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') || 
-          url.startsWith('about:') || url.startsWith('edge://')) {
-        console.log(`Skipping connection to restricted page: ${url}`);
-        resolve(false);
-        return;
-      }
-      
-      try {
-        const port = chrome.tabs.connect(tab.id, { name: 'license-matcher' });
-        
-        port.onDisconnect.addListener(() => {
-          if (chrome.runtime.lastError) {
-            console.warn('Port disconnected due to error:', chrome.runtime.lastError.message);
-          }
-          resolve(false);
-        });
-        
-        port.postMessage({ function: 'html' });
-        
-        port.onMessage.addListener((response) => {
-          // Only store if we actually got valid data
-          if (response && response.html) {
-            console.log('Successfully connected to tab and received HTML');
-            // Store data safely
-            try {
-              window.cachedHtml = response.html;
-              window.cachedTitle = response.title;
-              window.cachedDescription = response.description;
-            } catch (err) {
-              console.error('Error storing tab data:', err);
-            }
-          }
-          resolve(true);
-        });
-      } catch (err) {
-        console.warn('Error establishing connection:', err);
-        resolve(false);
-      }
-    });
-  });
 }
 
 // Message listener
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log('Message received in background script:', request);
-
   if (request.action === 'checkLicense') {
     const selectedText = request.text;
     
@@ -632,7 +531,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // If no tab ID is available (e.g., sent from popup), get the current active tab
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (chrome.runtime.lastError || !tabs || tabs.length === 0) {
-          console.error('Error getting active tab:', chrome.runtime.lastError);
+          console.error('Error getting active tab:', chrome.runtime.lastError ? 
+                        chrome.runtime.lastError.message : 'No active tabs found');
           return;
         }
         
@@ -652,10 +552,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return false;
 });
 
-// Function to handle the license checking process - modified to not use sendResponse
+// Function to handle the license checking process
 function processLicenseCheck(selectedText) {
-  console.log('Processing license check for tab:', originTabId);
-  
   // First clear any previous results
   sendMessageToTab(originTabId, { action: 'clearResults' })
     .then(() => {
@@ -668,7 +566,7 @@ function processLicenseCheck(selectedText) {
         sendMessageToTab(originTabId, { 
           action: 'progressUpdate', 
           progress 
-        }).catch(err => console.error('Error sending progress update:', err));
+        }).catch(err => console.error('Error sending progress update:', err.message || err));
       };
       
       // Fetch licenses and send results to the originating tab
@@ -681,10 +579,23 @@ function processLicenseCheck(selectedText) {
       });
     })
     .catch(error => {
-      console.error('Error in license check process:', error);
-      sendMessageToTab(originTabId, { 
-        action: 'showError', 
-        error: error.message 
+      // More detailed error handling
+      const errorMessage = error.message || (typeof error === 'string' ? error : 'Unknown error');
+      console.error('Error in license check process:', errorMessage);
+      
+      // Check if tab still exists before trying to send the error
+      chrome.tabs.get(originTabId, (tab) => {
+        if (chrome.runtime.lastError) {
+          console.error('Cannot send error to tab - tab may be closed:', chrome.runtime.lastError.message);
+          return;
+        }
+        
+        sendMessageToTab(originTabId, { 
+          action: 'showError', 
+          error: errorMessage 
+        }).catch(err => {
+          console.error('Failed to send error to tab:', err.message || err);
+        });
       });
     });
 }
@@ -711,23 +622,12 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
-// Modified onInstalled handler to avoid immediate connection attempts
+// Extension installation handler
 chrome.runtime.onInstalled.addListener(async (details) => {
   console.log(`Extension ${details.reason}ed.`);
-  
-  // On fresh install or update, preload the database but don't try to connect yet
+
+  // On fresh install or update, preload the database
   if (details.reason === 'install' || details.reason === 'update') {
-    console.log('Starting database preload...');
     await preloadLicenseDatabase();
   }
-  
-  // No immediate connect() call here - we'll connect when needed
 });
-
-// Add a helper function to handle connection only when needed
-async function ensureConnection() {
-  // Only try to connect if we're going to use the connection
-  const connected = await connect();
-  console.log('Connection established:', connected);
-  return connected;
-}
