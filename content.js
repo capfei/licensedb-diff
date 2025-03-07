@@ -86,6 +86,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'showUI') {
     uiContainer.style.display = 'flex';
     sendResponse({ success: true });
+  } else if (message.action === 'clearResults') {
+    // Clear previous results
+    const dropdown = document.getElementById('license-diff-dropdown');
+    dropdown.innerHTML = '';
+    
+    document.getElementById('license-diff-url').innerHTML = '';
+    document.getElementById('license-diff-display').innerHTML = '';
+    document.getElementById('license-diff-progress').style.width = '0%';
+    document.getElementById('license-diff-status').innerText = 'Starting license comparison...';
+    
+    // Reset the global matches array
+    matches = [];
+    
+    sendResponse({ success: true });
   } else if (message.action === 'progressUpdate') {
     const { checked, total } = message.progress;
     const progressPercent = ((checked / total) * 100).toFixed(2);

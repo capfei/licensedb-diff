@@ -126,6 +126,7 @@ async function preloadLicenseDatabase() {
     const batchSize = 50;
     const totalLicenses = licenses.length;
     let processed = 0;
+    let failures = 0;
     
     for (let i = 0; i < totalLicenses; i += batchSize) {
       const batch = licenses.slice(i, Math.min(i + batchSize, totalLicenses));
@@ -135,7 +136,7 @@ async function preloadLicenseDatabase() {
         try {
           // Fetch and store the license details
           const licenseUrl = `https://scancode-licensedb.aboutcode.org/${license.json}`;
-          const licenseData = await fetch(licenseUrl).then(response => response.json());
+          const licenseData = await fetchWithCache(licenseUrl, license.license_key, 'licenses');
           
           // Store in licenses store
           const licenseStore = db.transaction(['licenses'], 'readwrite')
@@ -158,6 +159,7 @@ async function preloadLicenseDatabase() {
             });
           }
         } catch (error) {
+          failures++;
           console.error(`Error processing license ${license.license_key}:`, error);
         }
       }));
@@ -172,6 +174,7 @@ async function preloadLicenseDatabase() {
       console.log(`License initialization progress: ${processed}/${totalLicenses} (${percentComplete}%)`);
     }
     
+    console.log(`License database initialization completed. Processed ${processed} licenses with ${failures} failures.`);
     // Mark database as initialized
     await markDatabaseInitialized();
     
@@ -209,7 +212,24 @@ async function fetchWithCache(url, cacheKey, storeName) {
             if (!response.ok) {
               throw new Error(`Failed to fetch ${url}: ${response.statusText}`);
             }
-            return response.json();
+            
+            // Check content type to verify it's JSON
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+              console.warn(`Warning: ${url} returned non-JSON content type: ${contentType}`);
+              // Continue anyway, but log the warning
+            }
+            
+            return response.text().then(text => {
+              try {
+                // Try to parse the text as JSON
+                return JSON.parse(text);
+              } catch (e) {
+                console.error(`Error parsing JSON from ${url}:`, e);
+                console.error(`Response starts with: ${text.substring(0, 100)}...`);
+                throw new Error(`Invalid JSON response from ${url}`);
+              }
+            });
           })
           .then((data) => {
             // Cache the data
@@ -227,6 +247,7 @@ async function fetchWithCache(url, cacheKey, storeName) {
             };
           })
           .catch((error) => {
+            console.error(`Error fetching or processing ${url}:`, error);
             reject(error);
           });
       }
@@ -387,11 +408,18 @@ async function fetchLicenses(text, sendProgress) {
           try {
             // Fetch the license text with caching
             const licenseUrl = `https://scancode-licensedb.aboutcode.org/${license.json}`;
-            const licenseData = await fetchWithCache(
-              licenseUrl,
-              license.license_key,
-              'licenses'
-            );
+            let licenseData;
+            
+            try {
+              licenseData = await fetchWithCache(
+                licenseUrl,
+                license.license_key,
+                'licenses'
+              );
+            } catch (fetchError) {
+              console.warn(`Skipping license ${license.license_key} due to fetch error:`, fetchError.message);
+              return null;
+            }
 
             const licenseText = licenseData.text;
             const licenseName = licenseData.name;
@@ -601,8 +629,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 function processLicenseCheck(selectedText) {
   console.log('Processing license check for tab:', originTabId);
   
-  // Show the UI in the originating tab
-  sendMessageToTab(originTabId, { action: 'showUI' })
+  // First clear any previous results
+  sendMessageToTab(originTabId, { action: 'clearResults' })
+    .then(() => {
+      // Show the UI in the originating tab
+      return sendMessageToTab(originTabId, { action: 'showUI' });
+    })
     .then(() => {
       // Function to send progress updates to the originating tab
       const sendProgress = (progress) => {
