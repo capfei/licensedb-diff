@@ -1,6 +1,7 @@
 #license-diff-ui {
   font-family: sans-serif;
   position: fixed;
+  background-color: #fff;
   top: 20px;
   right: 20px;
   width: 50%;
@@ -10,12 +11,11 @@
   max-height: -webkit-fill-available;
   max-height: fill-available;
   max-height: stretch; /* Latest specification */
-  background-color: #fff;
   border: 1px solid #ccc;
   border-radius: 5px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
   padding: 10px;
-  z-index: auto;
+  z-index: 5;
   overflow: auto;
   flex-direction: column;
   display: none; /* Hidden by default */

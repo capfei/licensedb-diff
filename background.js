@@ -483,7 +483,7 @@ async function fetchLicenses(text, sendProgress) {
       const match = topMatches[i];
       // Generate diff using DiffMatchPatch
       var d = dmp.diff_main(text, match.licenseText);
-      dmp.diff_cleanupSemantic(d);
+      dmp.diff_cleanupEfficiency(d);
       match.diff = dmp.diff_prettyHtml(d);
       // Remove the license text to save memory
       delete match.licenseText;
@@ -625,7 +625,7 @@ chrome.action.onClicked.addListener(async (tab) => {
 // Extension installation handler
 chrome.runtime.onInstalled.addListener(async (details) => {
   console.log(`Extension ${details.reason}ed.`);
-
+  
   // On fresh install or update, preload the database
   if (details.reason === 'install' || details.reason === 'update') {
     await preloadLicenseDatabase();
