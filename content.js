@@ -31,10 +31,7 @@ uiContainer.appendChild(status);
 
 // Add a progress bar
 const progressBar = document.createElement('div');
-progressBar.style.width = '100%';
-progressBar.style.backgroundColor = '#ddd';
-progressBar.style.borderRadius = '5px';
-progressBar.style.marginBottom = '10px';
+progressBar.id = 'license-diff-progress-container';
 progressBar.innerHTML = `
   <div id="license-diff-progress"></div>
 `;

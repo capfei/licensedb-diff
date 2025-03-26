@@ -1,5 +1,5 @@
 #license-diff-ui {
-  font-family: sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
   position: fixed;
   background-color: #fff;
   top: 20px;
@@ -12,57 +12,300 @@
   max-height: fill-available;
   max-height: stretch; /* Latest specification */
   border: 1px solid #ccc;
-  border-radius: 5px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-  padding: 10px;
-  z-index: 5;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 16px;
+  z-index: 999;
   overflow: auto;
   flex-direction: column;
   display: none; /* Hidden by default */
+  transition: all 0.3s ease-in-out;
 }
 
 #license-diff-ui button {
   position: absolute;
-  top: 5px;
-  right: 5px;
+  top: 8px;
+  right: 8px;
   background: none;
   border: none;
-  font-size: 16px;
+  font-size: 20px;
   cursor: pointer;
+  transition: color 0.2s ease;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#license-diff-ui button:hover {
+  background-color: rgba(0, 0, 0, 0.1);
 }
 
 #license-diff-ui h3 {
   margin-top: 0;
+  margin-bottom: 16px;
+  font-weight: 600;
+  font-size: 18px;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 10px;
+}
+
+/* Progress bar container */
+#license-diff-progress-container {
+  width: 100%;
+  height: 8px;
+  background-color: #f3f3f3;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 16px;
 }
 
 #license-diff-progress {
   width: 0%;
-  height: 10px;
+  height: 100%; /* Set to 100% to fill container vertically */
   background-color: #4CAF50;
-  border-radius: 5px;
+  border-radius: 6px;
+  transition: width 0.4s ease-in-out;
 }
 
 #license-diff-dropdown {
   width: 100%;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+  font-family: inherit;
+  font-size: 14px;
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23666666%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.4-12.8z%22%2F%3E%3C%2Fsvg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px top 50%;
+  background-size: 10px auto;
+  cursor: pointer;
+  transition: border-color 0.2s ease;
+}
+
+#license-diff-dropdown:focus {
+  border-color: #4CAF50;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.25);
+}
+
+#license-diff-status {
+  font-size: 14px;
   margin-bottom: 10px;
-  padding: 5px;
+}
+
+#license-diff-url {
+  margin-bottom: 10px;
+}
+
+#license-diff-url a {
+  color: #4CAF50;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+#license-diff-url a:hover {
+  text-decoration: underline;
 }
 
 #license-diff-display {
-  margin-top: 10px;
+  margin-top: 16px;
   overflow-y: auto;
+  padding: 12px;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 /* Notification container */
 #license-diff-notifications {
   width: 100%;
-  margin-bottom: 10px;
+  margin-bottom: 16px;
 }
 
 /* Individual notification */
 .license-diff-notification {
-  width: calc(100% - 22px);
-  padding: 10px;
-  margin-bottom: 10px;
-  border-radius: 4px;
+  width: calc(100% - 24px);
+  padding: 12px;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Styling for diff results */
+#license-diff-display ins {
+  background: #e6ffe6;
+  text-decoration: none;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+#license-diff-display del {
+  background: #ffe6e6;
+  text-decoration: none;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+#license-diff-display span {
+  padding: 0 1px;
+}
+
+/* Light/Dark mode support */
+@media (prefers-color-scheme: light) {
+  #license-diff-ui {
+    background-color: #ffffff;
+    color: #333333;
+  }
+  
+  #license-diff-ui button:hover {
+    background-color: rgba(0, 0, 0, 0.1);
+  }
+  
+  #license-diff-ui h3 {
+    border-bottom-color: #eee;
+  }
+  
+  #license-diff-dropdown {
+    background-color: #ffffff;
+    color: #333333;
+    border-color: #cccccc;
+  }
+  
+  .license-diff-notification.info {
+    background-color: #e7f3fe;
+    color: #0c5460;
+    border: 1px solid #bee5eb;
+  }
+  
+  .license-diff-notification.warning {
+    background-color: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffeeba;
+  }
+  
+  .license-diff-notification.error {
+    background-color: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+  }
+  
+  .license-diff-notification.success {
+    background-color: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+  }
+  
+  #license-diff-display {
+    background-color: #fafafa;
+    border-color: #eee;
+  }
+  
+  #license-diff-display ins {
+    background-color: #e6ffe6;
+    color: #0a5b0a;
+  }
+  
+  #license-diff-display del {
+    background-color: #ffe6e6;
+    color: #7a0000;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  #license-diff-ui {
+    background-color: #2d2d2d;
+    color: #e0e0e0;
+    border-color: #444;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  }
+  
+  #license-diff-ui button {
+    color: #e0e0e0;
+  }
+  
+  #license-diff-ui button:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+  }
+  
+  #license-diff-ui h3 {
+    border-bottom-color: #444;
+  }
+  
+  #license-diff-progress-container {
+    background-color: #444;
+  }
+  
+  #license-diff-dropdown {
+    background-color: #3d3d3d;
+    color: #e0e0e0;
+    border-color: #555;
+    background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23cccccc%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.4-12.8z%22%2F%3E%3C%2Fsvg%3E");
+  }
+  
+  #license-diff-dropdown:focus {
+    border-color: #6abf69;
+    box-shadow: 0 0 0 2px rgba(106, 191, 105, 0.25);
+  }
+  
+  #license-diff-url a {
+    color: #7ecc7e;
+  }
+  
+  #license-diff-display {
+    background-color: #333;
+    border-color: #444;
+  }
+  
+  .license-diff-notification.info {
+    background-color: #204251;
+    color: #9bdaf1;
+    border: 1px solid #2e5f71;
+  }
+  
+  .license-diff-notification.warning {
+    background-color: #3e3219;
+    color: #ffd970;
+    border: 1px solid #554820;
+  }
+  
+  .license-diff-notification.error {
+    background-color: #442126;
+    color: #f1adb5;
+    border: 1px solid #582a30;
+  }
+  
+  .license-diff-notification.success {
+    background-color: #1d3a26;
+    color: #8eda99;
+    border: 1px solid #2a543a;
+  }
+  
+  #license-diff-display ins {
+    background-color: #1b401b;
+    color: #8eda99;
+  }
+  
+  #license-diff-display del {
+    background-color: #471818;
+    color: #f1adb5;
+  }
 }
