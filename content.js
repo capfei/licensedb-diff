@@ -17,6 +17,13 @@ const title = document.createElement('h3');
 title.innerText = 'Licenses';
 uiContainer.appendChild(title);
 
+// Create notifications container
+const notificationsContainer = document.createElement('div');
+notificationsContainer.id = 'license-diff-notifications';
+notificationsContainer.style.width = '100%';
+notificationsContainer.style.marginBottom = '10px';
+uiContainer.appendChild(notificationsContainer);
+
 // Add a status message
 const status = document.createElement('div');
 status.id = 'license-diff-status';
@@ -64,6 +71,61 @@ document.body.appendChild(uiContainer);
 
 // Store matches globally
 let matches = [];
+
+// Function to show notifications that automatically disappear
+function showNotification(message, type = 'info', duration = 5000) {
+  const notification = document.createElement('div');
+  notification.className = `license-diff-notification ${type}`;
+  notification.textContent = message;
+  notification.style.padding = '10px';
+  notification.style.marginBottom = '10px';
+  notification.style.borderRadius = '4px';
+  notification.style.animation = 'fadeIn 0.3s ease-in-out';
+  
+  // Style based on notification type
+  switch(type) {
+    case 'error':
+      notification.style.backgroundColor = '#ffecec';
+      notification.style.color = '#d8000c';
+      notification.style.border = '1px solid #d8000c';
+      break;
+    case 'warning':
+      notification.style.backgroundColor = '#fff8e6';
+      notification.style.color = '#9f6000';
+      notification.style.border = '1px solid #9f6000';
+      break;
+    case 'success':
+      notification.style.backgroundColor = '#e9ffdd';
+      notification.style.color = '#4f8a10';
+      notification.style.border = '1px solid #4f8a10';
+      break;
+    default: // info
+      notification.style.backgroundColor = '#e7f3fe';
+      notification.style.color = '#0c5460';
+      notification.style.border = '1px solid #0c5460';
+  }
+  
+  // Add to DOM
+  const container = document.getElementById('license-diff-notifications');
+  container.appendChild(notification);
+  
+  // Show UI if not already visible
+  if (uiContainer.style.display !== 'flex') {
+    uiContainer.style.display = 'flex';
+  }
+  
+  // Remove after duration
+  setTimeout(() => {
+    notification.style.animation = 'fadeOut 0.3s ease-in-out';
+    notification.addEventListener('animationend', () => {
+      if (notification.parentNode) {
+        notification.parentNode.removeChild(notification);
+      }
+    });
+  }, duration);
+  
+  return notification;
+}
 
 // Listen for messages from the background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -116,11 +178,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ success: true });
   } else if (message.action === 'showError') {
     document.getElementById('license-diff-status').innerText = `Error: ${message.error}`;
+    showNotification(`Error: ${message.error}`, 'error');
+    sendResponse({ success: true });
+  } else if (message.action === 'showNotification') {
+    const { message: notificationText, type } = message.notification;
+    showNotification(notificationText, type);
     sendResponse({ success: true });
   }
 
   return true; // Required to use sendResponse asynchronously
 });
+
+// Add CSS for animations
+const style = document.createElement('style');
+style.textContent = `
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  
+  @keyframes fadeOut {
+    from { opacity: 1; transform: translateY(0); }
+    to { opacity: 0; transform: translateY(-10px); }
+  }
+`;
+document.head.appendChild(style);
 
 // Notify the background script that the content script is ready
 try {

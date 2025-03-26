@@ -52,3 +52,17 @@
   margin-top: 10px;
   overflow-y: auto;
 }
+
+/* Notification container */
+#license-diff-notifications {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+/* Individual notification */
+.license-diff-notification {
+  width: calc(100% - 22px);
+  padding: 10px;
+  margin-bottom: 10px;
+  border-radius: 4px;
+}

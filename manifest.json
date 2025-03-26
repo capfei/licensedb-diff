@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "ScanCode LicenseDB Diff",
+  "name": "LicenseDB Diff",
   "version": "0.0.0",
   "description": "Compare selected text with ScanCode LicenseDB.",
   "permissions": [

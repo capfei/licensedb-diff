@@ -7,6 +7,9 @@ import DiffMatchPatch from "./diff_match_patch.js";
 var originTabId; // Store the ID of the tab that initiated the license check
 var dmp = new DiffMatchPatch();
 
+// Track which tabs are currently running scans
+const activeScans = new Set();
+
 // Database version - increment when structure changes
 const DB_VERSION = 2;
 
@@ -252,6 +255,17 @@ async function fetchWithCache(url, cacheKey, storeName) {
       reject(`IndexedDB get error: ${event.target.errorCode}`);
     };
   });
+}
+
+// Function to show a notification in the tab
+function showNotification(tabId, message, type = 'info') {
+  return sendMessageToTab(tabId, { 
+    action: 'showNotification', 
+    notification: {
+      message,
+      type // 'info', 'warning', 'error', 'success'
+    }
+  }).catch(err => console.error('Error sending notification:', err.message || err));
 }
 
 function sendMessageToTab(tabId, message) {
@@ -510,6 +524,8 @@ function checkedLicenses() {
       chrome.runtime.sendMessage({ action: 'checkLicense', text: selectedText });
     } else {
       console.error('No text selected.');
+      // Show a notification about no text selected
+      chrome.runtime.sendMessage({ action: 'noTextSelected' });
     }
   } catch (error) {
     console.error('Error in checkedLicenses:', error);
@@ -545,6 +561,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     
     return false; // Don't need to keep port open for asynchronous response
+  } else if (request.action === 'noTextSelected') {
+    // Handle no text selected
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs && tabs.length > 0) {
+        showNotification(tabs[0].id, "Please select text before running license check.", "warning");
+      }
+    });
+    sendResponse({ status: 'received' });
+    return false;
   }
   
   // Default response for other messages
@@ -554,6 +579,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // Function to handle the license checking process
 function processLicenseCheck(selectedText) {
+  // Check if scan already running for this tab
+  if (activeScans.has(originTabId)) {
+    console.log(`Scan already in progress for tab ${originTabId}`);
+    showNotification(originTabId, "A license check is already in progress on this tab. Please wait.", "warning");
+    return;
+  }
+
+  // Mark this tab as having an active scan
+  activeScans.add(originTabId);
+  
   // First clear any previous results
   sendMessageToTab(originTabId, { action: 'clearResults' })
     .then(() => {
@@ -597,6 +632,10 @@ function processLicenseCheck(selectedText) {
           console.error('Failed to send error to tab:', err.message || err);
         });
       });
+    })
+    .finally(() => {
+      // Remove the tab from active scans when finished (success or failure)
+      activeScans.delete(originTabId);
     });
 }
 
@@ -616,6 +655,7 @@ chrome.action.onClicked.addListener(async (tab) => {
       function: checkedLicenses
     }).catch(err => {
       console.error('Script execution error:', err);
+      showNotification(tab.id, "Error executing script: " + (err.message || "Unknown error"), "error");
     });
   } catch (err) {
     console.error('Error handling action click:', err);
