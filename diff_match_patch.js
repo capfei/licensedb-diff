@@ -2219,6 +2219,7 @@ diff_match_patch.patch_obj.prototype.toString = function() {
   return text.join('').replace(/%20/g, ' ');
 };
 
+// Replaced export part
 diff_match_patch = diff_match_patch;
 diff_match_patch.DIFF_DELETE = DIFF_DELETE;
 diff_match_patch.DIFF_INSERT = DIFF_INSERT;

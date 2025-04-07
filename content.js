@@ -12,16 +12,9 @@ closeButton.addEventListener('click', () => {
 });
 uiContainer.appendChild(closeButton);
 
-// Add a title
-const title = document.createElement('h3');
-title.innerText = 'Licenses';
-uiContainer.appendChild(title);
-
 // Create notifications container
 const notificationsContainer = document.createElement('div');
 notificationsContainer.id = 'license-diff-notifications';
-notificationsContainer.style.width = '100%';
-notificationsContainer.style.marginBottom = '10px';
 uiContainer.appendChild(notificationsContainer);
 
 // Add a status message
@@ -44,14 +37,12 @@ linkDisplay.id = 'license-diff-url';
 // Add a dropdown for matches
 const dropdown = document.createElement('select');
 dropdown.id = 'license-diff-dropdown';
-dropdown.style.width = '100%';
-dropdown.style.marginBottom = '10px';
-dropdown.style.padding = '5px';
 dropdown.addEventListener('change', (event) => {
   const selectedMatch = matches.find(match => match.license === event.target.value);
   if (selectedMatch) {
     document.getElementById('license-diff-url').innerHTML = selectedMatch.link;
     document.getElementById('license-diff-display').innerHTML = selectedMatch.diff;
+    setupCopyButtons();
   }
 });
 uiContainer.appendChild(dropdown);
@@ -60,7 +51,6 @@ uiContainer.appendChild(linkDisplay);
 // Add a container for the diff
 const diffContainer = document.createElement('div');
 diffContainer.id = 'license-diff-display';
-diffContainer.style.marginTop = '10px';
 uiContainer.appendChild(diffContainer);
 
 // Append the UI to the webpage
@@ -74,33 +64,6 @@ function showNotification(message, type = 'info', duration = 5000) {
   const notification = document.createElement('div');
   notification.className = `license-diff-notification ${type}`;
   notification.textContent = message;
-  notification.style.padding = '10px';
-  notification.style.marginBottom = '10px';
-  notification.style.borderRadius = '4px';
-  notification.style.animation = 'fadeIn 0.3s ease-in-out';
-  
-  // Style based on notification type
-  switch(type) {
-    case 'error':
-      notification.style.backgroundColor = '#ffecec';
-      notification.style.color = '#d8000c';
-      notification.style.border = '1px solid #d8000c';
-      break;
-    case 'warning':
-      notification.style.backgroundColor = '#fff8e6';
-      notification.style.color = '#9f6000';
-      notification.style.border = '1px solid #9f6000';
-      break;
-    case 'success':
-      notification.style.backgroundColor = '#e9ffdd';
-      notification.style.color = '#4f8a10';
-      notification.style.border = '1px solid #4f8a10';
-      break;
-    default: // info
-      notification.style.backgroundColor = '#e7f3fe';
-      notification.style.color = '#0c5460';
-      notification.style.border = '1px solid #0c5460';
-  }
   
   // Add to DOM
   const container = document.getElementById('license-diff-notifications');
@@ -136,7 +99,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     document.getElementById('license-diff-url').innerHTML = '';
     document.getElementById('license-diff-display').innerHTML = '';
-    document.getElementById('license-diff-progress').style.width = '0%';
+    
+    const progressBar = document.getElementById('license-diff-progress');
+    progressBar.style.width = '0%';
+    progressBar.classList.add('animating'); // Start animation
+    
     document.getElementById('license-diff-status').innerText = 'Starting license comparison...';
     
     // Reset the global matches array
@@ -146,10 +113,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.action === 'progressUpdate') {
     const { checked, total } = message.progress;
     const progressPercent = ((checked / total) * 100).toFixed(2);
-    document.getElementById('license-diff-progress').style.width = `${progressPercent}%`;
+    const progressBar = document.getElementById('license-diff-progress');
+    
+    // Add animation class if not already there
+    if (!progressBar.classList.contains('animating')) {
+      progressBar.classList.add('animating');
+    }
+    
+    progressBar.style.width = `${progressPercent}%`;
     document.getElementById('license-diff-status').innerText = `Checked ${checked} of ${total} licenses...`;
+    
+    // If progress is complete, remove the animation
+    if (checked >= total) {
+      setTimeout(() => {
+        progressBar.classList.remove('animating');
+      }, 500); // Small delay to let the transition complete
+    }
+    
     sendResponse({ success: true });
   } else if (message.action === 'showResults') {
+    // Stop the progress bar animation
+    document.getElementById('license-diff-progress').classList.remove('animating');
+    
     matches = message.matches;
 
     // Clear the dropdown
@@ -161,7 +146,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const option = document.createElement('option');
       option.value = match.license;
       option.text = `${match.license} (${match.score}% match)`;
-      match.link = `<a href="https://scancode-licensedb.aboutcode.org/${match.license}.html" target="_blank">${match.name}</a> (${match.spdx})`;
+      
+      // Updated link with copy button for SPDX
+      match.link = `<a href="https://scancode-licensedb.aboutcode.org/${match.license}.html" target="_blank">${match.name}</a> 
+                    <span class="spdx-container">
+                      <span class="spdx-id">(${match.spdx})</span>
+                      <button class="copy-spdx-button" data-spdx="${match.spdx}" title="Copy ID">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                        </svg>
+                      </button>
+                    </span>`;
+      
       dropdown.appendChild(option);
     });
 
@@ -169,11 +166,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (matches.length > 0) {
       document.getElementById('license-diff-url').innerHTML = matches[0].link;
       document.getElementById('license-diff-display').innerHTML = matches[0].diff;
+      
+      // Add event listeners to copy buttons after they're added to the DOM
+      setupCopyButtons();
     }
 
     document.getElementById('license-diff-status').innerText = 'Comparison complete!';
     sendResponse({ success: true });
   } else if (message.action === 'showError') {
+    // Stop the progress bar animation on error too
+    document.getElementById('license-diff-progress').classList.remove('animating');
+    
     document.getElementById('license-diff-status').innerText = `Error: ${message.error}`;
     showNotification(`Error: ${message.error}`, 'error');
     sendResponse({ success: true });
@@ -185,6 +188,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return true; // Required to use sendResponse asynchronously
 });
+
+// Function to setup copy buttons
+function setupCopyButtons() {
+  document.querySelectorAll('.copy-spdx-button').forEach(button => {
+    button.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const spdxId = this.getAttribute('data-spdx');
+      
+      // Copy to clipboard
+      navigator.clipboard.writeText(spdxId)
+        .then(() => {
+          // Visual feedback - Change button appearance temporarily
+          this.classList.add('copied');
+          
+          // Show notification
+          showNotification(`Copied "${spdxId}" to clipboard`, 'success', 2000);
+          
+          // Reset button after a short delay
+          setTimeout(() => {
+            this.classList.remove('copied');
+          }, 1500);
+        })
+        .catch(err => {
+          console.error('Failed to copy SPDX ID: ', err);
+          showNotification('Failed to copy to clipboard', 'error');
+        });
+    });
+  });
+}
 
 // Add CSS for animations
 const style = document.createElement('style');

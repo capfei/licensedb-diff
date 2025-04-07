@@ -496,7 +496,7 @@ async function fetchLicenses(text, sendProgress) {
     for (let i = 0; i < topMatches.length; i++) {
       const match = topMatches[i];
       // Generate diff using DiffMatchPatch
-      var d = dmp.diff_main(text, match.licenseText);
+      var d = dmp.diff_main(match.licenseText, text);
       dmp.diff_cleanupEfficiency(d);
       match.diff = dmp.diff_prettyHtml(d);
       // Remove the license text to save memory

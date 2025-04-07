@@ -6,41 +6,41 @@
   right: 20px;
   width: 50%;
   height: auto;
-  max-height: 100%; /* Fallback */
-  max-height: -moz-available;
   max-height: -webkit-fill-available;
-  max-height: fill-available;
-  max-height: stretch; /* Latest specification */
-  border: 1px solid #ccc;
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-  padding: 16px;
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.15), 0 2px 10px rgba(0, 0, 0, 0.08);
+  padding: 20px;
   z-index: 999;
-  overflow: auto;
+  overflow: hidden;
   flex-direction: column;
   display: none; /* Hidden by default */
-  transition: all 0.3s ease-in-out;
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
 
-#license-diff-ui button {
+/* Change this selector to be specific to the close button */
+#license-diff-ui > button:first-child {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 10px;
+  right: 10px;
   background: none;
   border: none;
-  font-size: 20px;
+  font-size: 22px;
   cursor: pointer;
-  transition: color 0.2s ease;
+  transition: all 0.2s ease;
   border-radius: 50%;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
+  opacity: 0.7;
+  z-index: 5;
 }
 
-#license-diff-ui button:hover {
-  background-color: rgba(0, 0, 0, 0.1);
+#license-diff-ui > button:first-child:hover {
+  background-color: rgba(0, 0, 0, 0.08);
+  opacity: 1;
+  transform: scale(1.05);
 }
 
 #license-diff-ui h3 {
@@ -55,27 +55,41 @@
 /* Progress bar container */
 #license-diff-progress-container {
   width: 100%;
-  height: 8px;
-  background-color: #f3f3f3;
-  border-radius: 6px;
+  height: 6px;
+  background-color: rgba(0, 0, 0, 0.05);
+  border-radius: 8px;
   overflow: hidden;
-  margin-bottom: 16px;
+  margin-bottom: 20px;
 }
 
 #license-diff-progress {
   width: 0%;
   height: 100%; /* Set to 100% to fill container vertically */
   background-color: #4CAF50;
-  border-radius: 6px;
-  transition: width 0.4s ease-in-out;
+  border-radius: 8px;
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Create a separate class for the animated state */
+#license-diff-progress.animating {
+  background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.15) 25%, transparent 25%, 
+                      transparent 50%, rgba(255, 255, 255, 0.15) 50%, 
+                      rgba(255, 255, 255, 0.15) 75%, transparent 75%, transparent);
+  background-size: 20px 20px;
+  animation: progress-bar-stripes 2s linear infinite;
+}
+
+@keyframes progress-bar-stripes {
+  0% { background-position: 0 0; }
+  100% { background-position: 20px 0; }
 }
 
 #license-diff-dropdown {
   width: 100%;
-  margin-bottom: 14px;
-  padding: 8px 12px;
-  border-radius: 6px;
-  border: 1px solid #ccc;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
   font-family: inherit;
   font-size: 14px;
   appearance: none;
@@ -84,48 +98,78 @@
   background-position: right 12px top 50%;
   background-size: 10px auto;
   cursor: pointer;
-  transition: border-color 0.2s ease;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 #license-diff-dropdown:focus {
   border-color: #4CAF50;
   outline: none;
-  box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.25);
+  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.15);
 }
 
 #license-diff-status {
   font-size: 14px;
-  margin-bottom: 10px;
-}
-
-#license-diff-url {
-  margin-bottom: 10px;
-}
-
-#license-diff-url a {
-  color: #4CAF50;
-  text-decoration: none;
+  margin-bottom: 16px;
+  color: #666;
   font-weight: 500;
 }
 
+#license-diff-url {
+  margin-bottom: 16px;
+  padding: 4px 0;
+  font-size: 15px;
+}
+
+#license-diff-url a {
+  color: #3d8b3d;
+  text-decoration: none;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  border-bottom: 1px dotted transparent;
+}
+
 #license-diff-url a:hover {
-  text-decoration: underline;
+  color: #2d682d;
+  border-bottom: 1px dotted #2d682d;
 }
 
 #license-diff-display {
-  margin-top: 16px;
+  margin-top: 8px;
   overflow-y: auto;
-  padding: 12px;
-  border: 1px solid #eee;
-  border-radius: 6px;
+  padding: 16px;
+  border-radius: 8px;
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.6;
+  background-color: rgba(0, 0, 0, 0.02);
+  max-height: -webkit-fill-available; /*calc(60vh - 150px);*/
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+/* Custom scrollbar for the diff display */
+#license-diff-display::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+#license-diff-display::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#license-diff-display::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.2);
+  border-radius: 20px;
+}
+
+#license-diff-display::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(0, 0, 0, 0.3);
 }
 
 /* Notification container */
 #license-diff-notifications {
   width: 100%;
   margin-bottom: 16px;
+  overflow: hidden;
 }
 
 /* Individual notification */
@@ -133,10 +177,12 @@
   width: calc(100% - 24px);
   padding: 12px;
   margin-bottom: 12px;
-  border-radius: 6px;
+  border-radius: 8px;
   font-size: 14px;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   animation: slideIn 0.3s ease-out;
+  transition: all 0.2s ease;
+  line-height: 1.5;
 }
 
 @keyframes slideIn {
@@ -150,23 +196,67 @@
   }
 }
 
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+}
+
 /* Styling for diff results */
 #license-diff-display ins {
-  background: #e6ffe6;
+  background-color: #e8f5e9;
   text-decoration: none;
-  padding: 0 2px;
-  border-radius: 2px;
+  padding: 0 3px;
+  border-radius: 3px;
+  margin: 0 1px;
+  box-shadow: 0 0 0 1px rgba(76, 175, 80, 0.2);
+  transition: background-color 0.2s ease;
 }
 
 #license-diff-display del {
-  background: #ffe6e6;
+  background-color: #ffebee;
   text-decoration: none;
-  padding: 0 2px;
-  border-radius: 2px;
+  padding: 0 3px;
+  border-radius: 3px;
+  margin: 0 1px;
+  box-shadow: 0 0 0 1px rgba(244, 67, 54, 0.2);
+  transition: background-color 0.2s ease;
 }
 
 #license-diff-display span {
   padding: 0 1px;
+}
+
+/* SPDX ID and copy button styling */
+.spdx-container {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+}
+
+.spdx-id {
+  font-weight: 500;
+}
+
+.copy-spdx-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 3px;
+  margin-left: 4px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.7;
+  transition: all 0.2s ease;
+  vertical-align: middle;
+  position: static; /* Ensure this button doesn't get positioned absolutely */
 }
 
 /* Light/Dark mode support */
@@ -174,10 +264,15 @@
   #license-diff-ui {
     background-color: #ffffff;
     color: #333333;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+  }
+  
+  #license-diff-ui button {
+    color: #555;
   }
   
   #license-diff-ui button:hover {
-    background-color: rgba(0, 0, 0, 0.1);
+    background-color: rgba(0, 0, 0, 0.08);
   }
   
   #license-diff-ui h3 {
@@ -193,30 +288,30 @@
   .license-diff-notification.info {
     background-color: #e7f3fe;
     color: #0c5460;
-    border: 1px solid #bee5eb;
+    border-left: 4px solid #17a2b8;
   }
   
   .license-diff-notification.warning {
     background-color: #fff3cd;
     color: #856404;
-    border: 1px solid #ffeeba;
+    border-left: 4px solid #ffc107;
   }
   
   .license-diff-notification.error {
     background-color: #f8d7da;
     color: #721c24;
-    border: 1px solid #f5c6cb;
+    border-left: 4px solid #dc3545;
   }
   
   .license-diff-notification.success {
     background-color: #d4edda;
     color: #155724;
-    border: 1px solid #c3e6cb;
+    border-left: 4px solid #28a745;
   }
   
   #license-diff-display {
     background-color: #fafafa;
-    border-color: #eee;
+    border: 1px solid #eee;
   }
   
   #license-diff-display ins {
@@ -227,6 +322,19 @@
   #license-diff-display del {
     background-color: #ffe6e6;
     color: #7a0000;
+    text-decoration: line-through;
+  }
+  
+  .copy-spdx-button {
+    color: #666;
+  }
+  
+  .copy-spdx-button:hover {
+    color: #333;
+  }
+  
+  .copy-spdx-button.copied {
+    color: #4CAF50;
   }
 }
 
@@ -234,12 +342,11 @@
   #license-diff-ui {
     background-color: #2d2d2d;
     color: #e0e0e0;
-    border-color: #444;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.1);
   }
   
   #license-diff-ui button {
-    color: #e0e0e0;
+    color: #ccc;
   }
   
   #license-diff-ui button:hover {
@@ -250,62 +357,100 @@
     border-bottom-color: #444;
   }
   
+  #license-diff-status {
+    color: #aaa;
+  }
+  
   #license-diff-progress-container {
-    background-color: #444;
+    background-color: rgba(255, 255, 255, 0.1);
+  }
+  
+  #license-diff-progress {
+    background-color: #6abf69;
   }
   
   #license-diff-dropdown {
     background-color: #3d3d3d;
     color: #e0e0e0;
-    border-color: #555;
+    border-color: rgba(255, 255, 255, 0.2);
     background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23cccccc%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.4-12.8z%22%2F%3E%3C%2Fsvg%3E");
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
   }
   
   #license-diff-dropdown:focus {
     border-color: #6abf69;
-    box-shadow: 0 0 0 2px rgba(106, 191, 105, 0.25);
+    box-shadow: 0 0 0 3px rgba(106, 191, 105, 0.25);
   }
   
   #license-diff-url a {
-    color: #7ecc7e;
+    color: #8dd28d;
+  }
+  
+  #license-diff-url a:hover {
+    color: #a8e2a8;
+    border-bottom: 1px dotted #a8e2a8;
   }
   
   #license-diff-display {
     background-color: #333;
-    border-color: #444;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  
+  #license-diff-display::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.2);
+  }
+  
+  #license-diff-display::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(255, 255, 255, 0.3);
   }
   
   .license-diff-notification.info {
     background-color: #204251;
     color: #9bdaf1;
-    border: 1px solid #2e5f71;
+    border-left: 4px solid #17a2b8;
   }
   
   .license-diff-notification.warning {
     background-color: #3e3219;
     color: #ffd970;
-    border: 1px solid #554820;
+    border-left: 4px solid #ffc107;
   }
   
   .license-diff-notification.error {
     background-color: #442126;
     color: #f1adb5;
-    border: 1px solid #582a30;
+    border-left: 4px solid #dc3545;
   }
   
   .license-diff-notification.success {
     background-color: #1d3a26;
     color: #8eda99;
-    border: 1px solid #2a543a;
+    border-left: 4px solid #28a745;
   }
   
   #license-diff-display ins {
     background-color: #1b401b;
     color: #8eda99;
+    box-shadow: 0 0 0 1px rgba(142, 218, 153, 0.3);
   }
   
   #license-diff-display del {
     background-color: #471818;
     color: #f1adb5;
+    box-shadow: 0 0 0 1px rgba(241, 173, 181, 0.3);
+  }
+  
+  .copy-spdx-button {
+    color: #aaa;
+  }
+  
+  .copy-spdx-button:hover {
+    color: #eee;
+    background-color: rgba(255, 255, 255, 0.1);
+  }
+  
+  .copy-spdx-button.copied {
+    background-color: rgba(106, 191, 105, 0.2);
+    color: #6abf69;
   }
 }
