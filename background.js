@@ -179,6 +179,9 @@ async function preloadLicenseDatabase() {
     // Mark database as initialized
     await markDatabaseInitialized();
     
+    // Record the update timestamp when initializing
+    await recordUpdateTimestamp();
+    
     // Reset badge
     chrome.action.setBadgeText({ text: 'Diff' });
     chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });  // Green for success
@@ -669,5 +672,211 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   // On fresh install or update, preload the database
   if (details.reason === 'install' || details.reason === 'update') {
     await preloadLicenseDatabase();
+    // Setup periodic updates
+    setupPeriodicUpdates();
+  }
+});
+
+// Also setup updates on browser startup
+chrome.runtime.onStartup.addListener(() => {
+  setupPeriodicUpdates();
+});
+
+// Check if database update is needed (every two weeks)
+async function isUpdateNeeded() {
+  try {
+    const db = await openDatabase();
+    
+    return new Promise((resolve) => {
+      const transaction = db.transaction(['status'], 'readonly');
+      const store = transaction.objectStore('status');
+      const request = store.get('last_update');
+      
+      request.onsuccess = (event) => {
+        const result = event.target.result;
+        
+        if (!result || !result.timestamp) {
+          // No timestamp found, update needed
+          resolve(true);
+          return;
+        }
+        
+        const lastUpdateTime = new Date(result.timestamp).getTime();
+        const currentTime = new Date().getTime();
+        const twoWeeksInMs = 14 * 24 * 60 * 60 * 1000; // 14 days in milliseconds
+        
+        // Check if two weeks have passed since last update
+        resolve(currentTime - lastUpdateTime > twoWeeksInMs);
+      };
+      
+      request.onerror = () => {
+        console.error('Error checking last update timestamp');
+        // If there's an error, assume update is needed
+        resolve(true);
+      };
+    });
+  } catch (error) {
+    console.error('Error checking if update is needed:', error);
+    return true; // On error, assume update is needed
+  }
+}
+
+// Record the timestamp of the current update
+async function recordUpdateTimestamp() {
+  try {
+    const db = await openDatabase();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(['status'], 'readwrite');
+      const store = transaction.objectStore('status');
+      const request = store.put({
+        id: 'last_update',
+        timestamp: new Date().toISOString()
+      });
+      
+      request.onsuccess = () => resolve(true);
+      request.onerror = (error) => reject(error);
+    });
+  } catch (error) {
+    console.error('Error recording update timestamp:', error);
+    return false;
+  }
+}
+
+// Check for database updates and update if needed
+async function checkForDatabaseUpdates() {
+  console.log('Checking if license database needs updating...');
+  const needsUpdate = await isUpdateNeeded();
+  
+  if (needsUpdate) {
+    console.log('License database update needed. Starting update process...');
+    
+    try {
+      // Set badge to indicate update in progress
+      chrome.action.setBadgeText({ text: 'Updt' });
+      chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' }); // Orange
+      
+      // Fetch the license index to check for changes
+      const licenseList = await fetch('https://scancode-licensedb.aboutcode.org/index.json', {
+        cache: 'no-cache' // Force fresh content
+      }).then(response => response.json());
+      
+      // Filter out deprecated licenses
+      const licenses = licenseList.filter(obj => !obj.is_deprecated);
+      console.log(`Found ${licenses.length} non-deprecated licenses during update check`);
+      
+      // Store the updated index
+      const db = await openDatabase();
+      const metadataStore = db.transaction(['metadata'], 'readwrite')
+        .objectStore('metadata');
+      await new Promise((resolve, reject) => {
+        const request = metadataStore.put({ id: 'index', data: licenses });
+        request.onsuccess = () => resolve();
+        request.onerror = (error) => reject(error);
+      });
+      
+      // Process licenses in batches (reusing logic from preloadLicenseDatabase)
+      const batchSize = 50;
+      const totalLicenses = licenses.length;
+      let processed = 0;
+      let failures = 0;
+      
+      for (let i = 0; i < totalLicenses; i += batchSize) {
+        const batch = licenses.slice(i, Math.min(i + batchSize, totalLicenses));
+        
+        // Process this batch
+        await Promise.all(batch.map(async (license) => {
+          try {
+            // Fetch with no-cache to get fresh content
+            const licenseUrl = `https://scancode-licensedb.aboutcode.org/${license.json}`;
+            const response = await fetch(licenseUrl, { cache: 'no-cache' });
+            
+            if (!response.ok) {
+              throw new Error(`Failed to fetch ${licenseUrl}: ${response.statusText}`);
+            }
+            
+            const licenseData = await response.json();
+            
+            // Store in licenses store
+            const licenseStore = db.transaction(['licenses'], 'readwrite')
+              .objectStore('licenses');
+            await new Promise((resolve, reject) => {
+              const request = licenseStore.put({ license_key: license.license_key, data: licenseData });
+              request.onsuccess = () => resolve();
+              request.onerror = (error) => reject(error);
+            });
+            
+            // Pre-calculate and store the license text vector
+            if (licenseData.text) {
+              const vector = createTextVector(licenseData.text);
+              const vectorStore = db.transaction(['vectors'], 'readwrite')
+                .objectStore('vectors');
+              await new Promise((resolve, reject) => {
+                const request = vectorStore.put({ license_key: license.license_key, data: vector });
+                request.onsuccess = () => resolve();
+                request.onerror = (error) => reject(error);
+              });
+            }
+          } catch (error) {
+            failures++;
+            console.error(`Error processing license ${license.license_key} during update:`, error);
+          }
+        }));
+        
+        // Update progress
+        processed += batch.length;
+        const percentComplete = Math.round((processed / totalLicenses) * 100);
+        
+        // Update badge to show progress
+        chrome.action.setBadgeText({ text: `${percentComplete}%` });
+      }
+      
+      // Record the update timestamp
+      await recordUpdateTimestamp();
+      
+      console.log(`License database update completed. Processed ${processed} licenses with ${failures} failures.`);
+      
+      // Reset badge
+      chrome.action.setBadgeText({ text: 'Diff' });
+      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });  // Green
+      
+      return true;
+    } catch (error) {
+      console.error('Error updating license database:', error);
+      chrome.action.setBadgeText({ text: 'Err' });
+      chrome.action.setBadgeBackgroundColor({ color: '#F44336' });  // Red
+      
+      // Reset badge after a delay
+      setTimeout(() => {
+        chrome.action.setBadgeText({ text: 'Diff' });
+        chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
+      }, 5000);
+      
+      return false;
+    }
+  } else {
+    console.log('License database is up to date');
+    return true;
+  }
+}
+
+// Register alarm for periodic updates (on install/startup)
+function setupPeriodicUpdates() {
+  chrome.alarms.create('checkLicenseDbUpdates', {
+    periodInMinutes: 60 * 24 // Check daily, but only update if two weeks have passed
+  });
+  
+  // Also do an immediate check on startup
+  checkForDatabaseUpdates().catch(err => {
+    console.error('Error during startup update check:', err);
+  });
+}
+
+// Listen for alarms
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'checkLicenseDbUpdates') {
+    checkForDatabaseUpdates().catch(err => {
+      console.error('Error during scheduled update check:', err);
+    });
   }
 });

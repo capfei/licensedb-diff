@@ -74,6 +74,9 @@ function showNotification(message, type = 'info', duration = 5000) {
     uiContainer.style.display = 'flex';
   }
   
+  // Scroll notification into view if needed
+  notification.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  
   // Remove after duration
   setTimeout(() => {
     notification.style.animation = 'fadeOut 0.3s ease-in-out';
@@ -205,7 +208,7 @@ function setupCopyButtons() {
           this.classList.add('copied');
           
           // Show notification
-          showNotification(`Copied "${spdxId}" to clipboard`, 'success', 2000);
+          const notification = showNotification(`Copied "${spdxId}" to clipboard`, 'success', 2000);
           
           // Reset button after a short delay
           setTimeout(() => {
