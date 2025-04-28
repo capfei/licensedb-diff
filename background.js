@@ -518,6 +518,69 @@ async function fetchLicenses(text, sendProgress) {
   }
 }
 
+// Process a license check request
+async function processLicenseCheck(selectedText) {
+  if (!selectedText || selectedText.trim().length === 0) {
+    showNotification(originTabId, 'Please select some text to compare with licenses.', 'warning');
+    return;
+  }
+  
+  if (activeScans.has(originTabId)) {
+    showNotification(originTabId, 'Already processing a license check. Please wait...', 'info');
+    return;
+  }
+  
+  // Mark this tab as having an active scan
+  activeScans.add(originTabId);
+  
+  try {
+    // Show UI and clear previous results
+    await sendMessageToTab(originTabId, { action: 'showUI' });
+    await sendMessageToTab(originTabId, { action: 'clearResults' });
+    
+    // Progress callback for reporting scan progress
+    const sendProgress = async (progress) => {
+      try {
+        await sendMessageToTab(originTabId, { 
+          action: 'progressUpdate', 
+          progress 
+        });
+      } catch (error) {
+        console.error('Error sending progress update:', error);
+      }
+    };
+    
+    // Fetch and compare licenses
+    const matches = await fetchLicenses(selectedText, sendProgress);
+    
+    if (matches && matches.length > 0) {
+      // Report the matches to the content script
+      await sendMessageToTab(originTabId, { 
+        action: 'showResults', 
+        matches 
+      });
+    } else {
+      await sendMessageToTab(originTabId, { 
+        action: 'showError', 
+        error: 'No significant license matches found.' 
+      });
+    }
+  } catch (error) {
+    console.error('Error processing license check:', error);
+    try {
+      await sendMessageToTab(originTabId, { 
+        action: 'showError', 
+        error: error.message || 'An unknown error occurred' 
+      });
+    } catch (err) {
+      console.error('Error showing error notification:', err);
+    }
+  } finally {
+    // Remove this tab from active scans
+    activeScans.delete(originTabId);
+  }
+}
+
 // Function to get selected text and send to background script
 function checkedLicenses() {
   try {
@@ -536,9 +599,9 @@ function checkedLicenses() {
 }
 
 // Message listener
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'checkLicense') {
-    const selectedText = request.text;
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'checkLicense') {
+    const selectedText = message.text;
     
     // Send an immediate response to keep the message port alive
     sendResponse({ status: 'processing' });
@@ -564,7 +627,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     
     return false; // Don't need to keep port open for asynchronous response
-  } else if (request.action === 'noTextSelected') {
+  } else if (message.action === 'noTextSelected') {
     // Handle no text selected
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs && tabs.length > 0) {
@@ -573,6 +636,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     sendResponse({ status: 'received' });
     return false;
+  } else if (message.action === 'getDatabaseInfo') {
+    // Handle request for database information
+    getDatabaseInfo()
+      .then(info => sendResponse(info))
+      .catch(error => sendResponse({ error: error.message || 'Unknown error' }));
+    return true; // Keep port open for async response
+  } else if (message.action === 'refreshDatabase') {
+    // Handle manual database refresh
+    forceUpdateDatabase()
+      .then(() => sendResponse({ success: true }))
+      .catch(error => sendResponse({ error: error.message || 'Unknown error' }));
+    return true; // Keep port open for async response
+  } else if (message.action === 'resetDatabase') {
+    // Handle database reset
+    resetDatabase()
+      .then(() => sendResponse({ success: true }))
+      .catch(error => sendResponse({ error: error.message || 'Unknown error' }));
+    return true; // Keep port open for async response
   }
   
   // Default response for other messages
@@ -580,66 +661,353 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return false;
 });
 
-// Function to handle the license checking process
-function processLicenseCheck(selectedText) {
-  // Check if scan already running for this tab
-  if (activeScans.has(originTabId)) {
-    console.log(`Scan already in progress for tab ${originTabId}`);
-    showNotification(originTabId, "A license check is already in progress on this tab. Please wait.", "warning");
-    return;
+// Get database information for the options page
+async function getDatabaseInfo() {
+  try {
+    const db = await openDatabase();
+    
+    // Get initialization status
+    const isInitialized = await isDatabaseInitialized();
+    
+    // Get last update timestamp
+    let lastUpdate = null;
+    try {
+      const transaction = db.transaction(['status'], 'readonly');
+      const store = transaction.objectStore('status');
+      const request = store.get('last_update');
+      lastUpdate = await new Promise((resolve) => {
+        request.onsuccess = (event) => {
+          const result = event.target.result;
+          resolve(result && result.timestamp ? result.timestamp : null);
+        };
+        request.onerror = () => resolve(null);
+      });
+    } catch (error) {
+      console.error('Error getting last update:', error);
+    }
+    
+    // Get license count
+    let licenseCount = 0;
+    try {
+      const transaction = db.transaction(['licenses'], 'readonly');
+      const store = transaction.objectStore('licenses');
+      const countRequest = store.count();
+      licenseCount = await new Promise((resolve) => {
+        countRequest.onsuccess = () => resolve(countRequest.result);
+        countRequest.onerror = () => resolve(0);
+      });
+    } catch (error) {
+      console.error('Error getting license count:', error);
+    }
+    
+    // Get LicenseDB version from GitHub API
+    let licenseDbVersion = await getLicenseDbVersionFromGitHub();
+    
+    return {
+      isInitialized,
+      lastUpdate,
+      licenseCount,
+      licenseDbVersion
+    };
+  } catch (error) {
+    console.error('Error getting database info:', error);
+    throw error;
   }
+}
 
-  // Mark this tab as having an active scan
-  activeScans.add(originTabId);
-  
-  // First clear any previous results
-  sendMessageToTab(originTabId, { action: 'clearResults' })
-    .then(() => {
-      // Show the UI in the originating tab
-      return sendMessageToTab(originTabId, { action: 'showUI' });
-    })
-    .then(() => {
-      // Function to send progress updates to the originating tab
-      const sendProgress = (progress) => {
-        sendMessageToTab(originTabId, { 
-          action: 'progressUpdate', 
-          progress 
-        }).catch(err => console.error('Error sending progress update:', err.message || err));
+// Function to get LicenseDB version from GitHub API
+async function getLicenseDbVersionFromGitHub() {
+  try {
+    // Check if we have a cached version in storage
+    const cachedVersion = await getCachedLicenseDbVersion();
+    
+    // If we have a cached version that's less than 1 day old, use it
+    if (cachedVersion && cachedVersion.timestamp) {
+      const cacheTime = new Date(cachedVersion.timestamp).getTime();
+      const now = new Date().getTime();
+      const oneDayInMs = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+      
+      if (now - cacheTime < oneDayInMs) {
+        console.log('Using cached LicenseDB version');
+        return cachedVersion.version;
+      }
+    }
+    
+    // Fetch the latest version from GitHub API
+    console.log('Fetching LicenseDB version from GitHub API');
+    const response = await fetch('https://api.github.com/repos/aboutcode-org/scancode-toolkit/releases/latest');
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch from GitHub API: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    const version = data.name || data.tag_name || 'Unknown';
+    
+    // Cache the version for future use
+    await cacheLicenseDbVersion(version);
+    
+    return version;
+  } catch (error) {
+    console.error('Error fetching LicenseDB version from GitHub:', error);
+    
+    // If we have a cached version, return it even if it's old
+    const cachedVersion = await getCachedLicenseDbVersion();
+    if (cachedVersion && cachedVersion.version) {
+      return `${cachedVersion.version} (cached)`;
+    }
+    
+    return 'Error fetching version';
+  }
+}
+
+// Cache the LicenseDB version
+async function cacheLicenseDbVersion(version) {
+  try {
+    const db = await openDatabase();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(['status'], 'readwrite');
+      const store = transaction.objectStore('status');
+      const request = store.put({
+        id: 'licensedb_version',
+        version: version,
+        timestamp: new Date().toISOString()
+      });
+      
+      request.onsuccess = () => resolve(true);
+      request.onerror = (error) => reject(error);
+    });
+  } catch (error) {
+    console.error('Error caching LicenseDB version:', error);
+    return false;
+  }
+}
+
+// Get the cached LicenseDB version
+async function getCachedLicenseDbVersion() {
+  try {
+    const db = await openDatabase();
+    
+    return new Promise((resolve) => {
+      const transaction = db.transaction(['status'], 'readonly');
+      const store = transaction.objectStore('status');
+      const request = store.get('licensedb_version');
+      
+      request.onsuccess = (event) => {
+        const result = event.target.result;
+        resolve(result || null);
       };
       
-      // Fetch licenses and send results to the originating tab
-      return fetchLicenses(selectedText, sendProgress);
-    })
-    .then(matches => {
-      return sendMessageToTab(originTabId, { 
-        action: 'showResults', 
-        matches 
-      });
-    })
-    .catch(error => {
-      // More detailed error handling
-      const errorMessage = error.message || (typeof error === 'string' ? error : 'Unknown error');
-      console.error('Error in license check process:', errorMessage);
-      
-      // Check if tab still exists before trying to send the error
-      chrome.tabs.get(originTabId, (tab) => {
-        if (chrome.runtime.lastError) {
-          console.error('Cannot send error to tab - tab may be closed:', chrome.runtime.lastError.message);
-          return;
-        }
-        
-        sendMessageToTab(originTabId, { 
-          action: 'showError', 
-          error: errorMessage 
-        }).catch(err => {
-          console.error('Failed to send error to tab:', err.message || err);
-        });
-      });
-    })
-    .finally(() => {
-      // Remove the tab from active scans when finished (success or failure)
-      activeScans.delete(originTabId);
+      request.onerror = () => resolve(null);
     });
+  } catch (error) {
+    console.error('Error getting cached LicenseDB version:', error);
+    return null;
+  }
+}
+
+// Force update the database (manual trigger from options page)
+async function forceUpdateDatabase() {
+  try {
+    // Set badge to indicate update in progress
+    chrome.action.setBadgeText({ text: 'Updt' });
+    chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' }); // Orange
+    
+    // Send initial progress to options page
+    sendProgressUpdate(0, 'Starting database update...');
+    
+    // Fetch the license index to check for changes
+    sendProgressUpdate(5, 'Fetching license index...');
+    const response = await fetch('https://scancode-licensedb.aboutcode.org/index.json', {
+      cache: 'no-cache' // Force fresh content
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch license index: ${response.statusText}`);
+    }
+    
+    const licenseList = await response.json();
+    
+    // Filter out deprecated licenses
+    const licenses = licenseList.filter(obj => !obj.is_deprecated);
+    
+    sendProgressUpdate(10, `Found ${licenses.length} non-deprecated licenses`);
+    
+    // Store the updated index
+    const db = await openDatabase();
+    const metadataStore = db.transaction(['metadata'], 'readwrite').objectStore('metadata');
+    await new Promise((resolve, reject) => {
+      const request = metadataStore.put({ id: 'index', data: licenses });
+      request.onsuccess = () => resolve();
+      request.onerror = (error) => reject(error);
+    });
+    
+    // Process licenses in batches (similar to checkForDatabaseUpdates but with progress updates)
+    const batchSize = 50;
+    const totalLicenses = licenses.length;
+    let processed = 0;
+    let failures = 0;
+    
+    for (let i = 0; i < totalLicenses; i += batchSize) {
+      const batch = licenses.slice(i, Math.min(i + batchSize, totalLicenses));
+      
+      // Process this batch
+      await Promise.all(batch.map(async (license) => {
+        try {
+          // Fetch with no-cache to get fresh content
+          const licenseUrl = `https://scancode-licensedb.aboutcode.org/${license.json}`;
+          const response = await fetch(licenseUrl, { cache: 'no-cache' });
+          
+          if (!response.ok) {
+            throw new Error(`Failed to fetch ${licenseUrl}: ${response.statusText}`);
+          }
+          
+          const licenseData = await response.json();
+          
+          // Store in licenses store
+          const licenseStore = db.transaction(['licenses'], 'readwrite').objectStore('licenses');
+          await new Promise((resolve, reject) => {
+            const request = licenseStore.put({ license_key: license.license_key, data: licenseData });
+            request.onsuccess = () => resolve();
+            request.onerror = (error) => reject(error);
+          });
+          
+          // Pre-calculate and store the license text vector
+          if (licenseData.text) {
+            const vector = createTextVector(licenseData.text);
+            const vectorStore = db.transaction(['vectors'], 'readwrite').objectStore('vectors');
+            await new Promise((resolve, reject) => {
+              const request = vectorStore.put({ license_key: license.license_key, data: vector });
+              request.onsuccess = () => resolve();
+              request.onerror = (error) => reject(error);
+            });
+          }
+        } catch (error) {
+          failures++;
+          console.error(`Error processing license ${license.license_key} during update:`, error);
+        }
+      }));
+      
+      // Update progress
+      processed += batch.length;
+      const percentComplete = Math.round((10 + (processed / totalLicenses) * 85)); // Scale to 10-95%
+      
+      // Send progress update
+      sendProgressUpdate(
+        percentComplete,
+        `Processing licenses: ${processed}/${totalLicenses} (${failures} failures)`
+      );
+      
+      // Update badge to show progress
+      chrome.action.setBadgeText({ text: `${Math.round(percentComplete)}%` });
+    }
+    
+    // Record the update timestamp
+    sendProgressUpdate(95, 'Finalizing update...');
+    await recordUpdateTimestamp();
+    
+    // Set flag to indicate database is initialized
+    await markDatabaseInitialized();
+    
+    // Also update the licensedb version when forcing an update
+    await getLicenseDbVersionFromGitHub();
+    
+    // Final success
+    sendProgressUpdate(100, 'Database update complete', true);
+    
+    console.log(`License database update completed. Processed ${processed} licenses with ${failures} failures.`);
+    
+    // Reset badge
+    chrome.action.setBadgeText({ text: 'Diff' });
+    chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });  // Green
+    
+    return true;
+  } catch (error) {
+    console.error('Error updating database:', error);
+    
+    // Send error progress update
+    sendProgressUpdate(0, `Error: ${error.message || 'Unknown error'}`, true);
+    
+    // Reset badge
+    chrome.action.setBadgeText({ text: 'Err' });
+    chrome.action.setBadgeBackgroundColor({ color: '#F44336' });  // Red
+    
+    setTimeout(() => {
+      chrome.action.setBadgeText({ text: 'Diff' });
+      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
+    }, 5000);
+    
+    throw error;
+  }
+}
+
+// Reset database (completely delete and reinitialize)
+async function resetDatabase() {
+  try {
+    // Set badge to indicate reset in progress
+    chrome.action.setBadgeText({ text: 'Rst' });
+    chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' }); // Orange
+    
+    // Send initial progress to options page
+    sendProgressUpdate(0, 'Deleting database...');
+    
+    // Delete the database
+    await new Promise((resolve, reject) => {
+      const deleteRequest = indexedDB.deleteDatabase('LicenseDB');
+      deleteRequest.onsuccess = () => {
+        console.log('Database deleted successfully');
+        resolve();
+      };
+      deleteRequest.onerror = () => {
+        const error = new Error('Failed to delete database');
+        console.error(error);
+        reject(error);
+      };
+    });
+    
+    sendProgressUpdate(20, 'Database deleted. Initializing new database...');
+    
+    // Reinitialize database
+    await preloadLicenseDatabase();
+    
+    // Final update
+    sendProgressUpdate(100, 'Database reset and reinitialized successfully', true);
+    
+    // Reset badge
+    chrome.action.setBadgeText({ text: 'Diff' });
+    chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });  // Green
+    
+    return true;
+  } catch (error) {
+    console.error('Error resetting database:', error);
+    
+    // Send error progress update
+    sendProgressUpdate(0, `Error: ${error.message || 'Unknown error'}`, true);
+    
+    // Reset badge
+    chrome.action.setBadgeText({ text: 'Err' });
+    chrome.action.setBadgeBackgroundColor({ color: '#F44336' });  // Red
+    
+    setTimeout(() => {
+      chrome.action.setBadgeText({ text: 'Diff' });
+      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
+    }, 5000);
+    
+    throw error;
+  }
+}
+
+// Function to send progress updates to the options page
+function sendProgressUpdate(progress, message, complete = false) {
+  chrome.runtime.sendMessage({
+    action: 'updateProgress',
+    progress: progress,
+    message: message,
+    complete: complete
+  }).catch(error => {
+    console.log('Could not send progress update (options page may be closed)', error);
+  });
 }
 
 // Update the action click handler to ensure connection before execution
