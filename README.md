@@ -8,7 +8,7 @@ official extension.
 
 ## Installation
 
-Thsi exetnsion has only been tested in Chrome. I would like to test other browsers in the future.
+This exetension has only been tested in Chrome. I would like to test other browsers in the future.
 
 To run this extension in your browser, you will need to clone the repo locally and follow the steps to
 load an unpacked extension.
