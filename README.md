@@ -23,8 +23,8 @@ differences and copy the license identifier by clicking on the copy button.
 If the license has a [SPDX identifier](https://spdx.org/licenses/), that will be displayed instead of
 the ScanCode LicenseRef (LicenseRef-scancode-*).
 
-Deprecated licenses and exceptions are currently excluded but I would like to add the ability to 
-include/exclude as an option in the future.
+Licenses and exceptions that marked with `"is_deprecated": true` are currently excluded from comparison
+but I would like to add the ability to include/exclude as an option in the future.
 
 This has only been tested to diff text on web pages and will may not work correctly for documents being
 viewed in a browser.
