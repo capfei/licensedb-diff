@@ -8,7 +8,7 @@ official extension.
 
 ## Installation
 
-This exetension has only been tested in Chrome. I would like to test other browsers in the future.
+This extension has only been tested in Chrome. I would like to test other browsers in the future.
 
 To run this extension in your browser, you will need to clone the repo locally and follow the steps to
 load an unpacked extension.
@@ -23,8 +23,8 @@ differences and copy the license identifier by clicking on the copy button.
 If the license has a [SPDX identifier](https://spdx.org/licenses/), that will be displayed instead of
 the ScanCode LicenseRef (LicenseRef-scancode-*).
 
-Licenses and exceptions that marked with `"is_deprecated": true` are currently excluded from comparison
+Licenses and exceptions that are marked with `"is_deprecated": true` are currently excluded from comparison
 but I would like to add the ability to include/exclude as an option in the future.
 
-This has only been tested to diff text on web pages and will may not work correctly for documents being
+This has only been tested to diff text on web pages and may not work correctly for documents being
 viewed in a browser.
