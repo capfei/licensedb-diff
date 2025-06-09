@@ -8,11 +8,9 @@ official extension.
 
 ## Installation
 
-This extension has only been tested in Chrome. I would like to test other browsers in the future.
-
-To run this extension in your browser, you will need to clone the repo locally and follow the steps to
-load an unpacked extension.
-https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked
+The extension is available to install from the Chrome Web Store. You will need to use the link
+below since the extension is currently unlisted.
+https://chromewebstore.google.com/detail/licensedb-diff/nlbgoabjahcideocgmnipmeabicnpejf
 
 ## Using the extension
 
