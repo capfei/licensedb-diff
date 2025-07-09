@@ -8,9 +8,8 @@ official extension.
 
 ## Installation
 
-The extension is available to install from the Chrome Web Store. You will need to use the link
-below since the extension is currently unlisted.
-https://chromewebstore.google.com/detail/licensedb-diff/nlbgoabjahcideocgmnipmeabicnpejf
+The extension is available in the 
+[Chrome Web Store](https://chromewebstore.google.com/detail/licensedb-diff/nlbgoabjahcideocgmnipmeabicnpejf).
 
 ## Using the extension
 
