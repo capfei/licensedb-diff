@@ -1,3 +1,8 @@
+// Avoid duplicate UI when dynamically injected multiple times
+if (window.__LICENSE_DIFF_LOADED__) {
+  console.log('LicenseDB Diff content script already initialized.');
+} else {
+window.__LICENSE_DIFF_LOADED__ = true;
 console.log('Content script loaded.');
 
 // Create a container for the UI
@@ -92,6 +97,10 @@ function showNotification(message, type = 'info', duration = 5000) {
 
 // Listen for messages from the background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'ping') { // Health check from background
+    sendResponse({ ok: true });
+    return; // No async work
+  }
   if (message.action === 'showUI') {
     uiContainer.style.display = 'flex';
     sendResponse({ success: true });
@@ -194,7 +203,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ success: true });
   }
 
-  return true; // Required to use sendResponse asynchronously
+  // All current branches answer synchronously; do not return true to avoid warning if channel closes.
 });
 
 // Function to setup copy buttons
@@ -249,3 +258,4 @@ try {
 } catch (err) {
   console.warn('Error notifying background script:', err);
 }
+} // end guarded initialization

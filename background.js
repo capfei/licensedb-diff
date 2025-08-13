@@ -276,8 +276,31 @@ function sendMessageToTab(tabId, message) {
     try {
       chrome.tabs.sendMessage(tabId, message, (response) => {
         if (chrome.runtime.lastError) {
-          console.error(`Error sending message to tab ${tabId}:`, chrome.runtime.lastError.message || 'Unknown error');
-          reject(new Error(chrome.runtime.lastError.message || 'Error communicating with tab'));
+          const msg = chrome.runtime.lastError.message || 'Unknown error';
+          // Attempt one-time dynamic injection if content script missing
+          if (msg.includes('Could not establish connection. Receiving end does not exist')) {
+            console.warn('Content script not found in tab ' + tabId + ', attempting dynamic injection...');
+            // Try injecting JS and CSS then resend once
+            Promise.all([
+              chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] }).catch(()=>{}),
+              chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] })
+            ]).then(() => {
+              chrome.tabs.sendMessage(tabId, message, (secondResp) => {
+                if (chrome.runtime.lastError) {
+                  console.error('Retry after injection failed:', chrome.runtime.lastError.message);
+                  reject(new Error(chrome.runtime.lastError.message));
+                } else {
+                  resolve(secondResp);
+                }
+              });
+            }).catch(injectErr => {
+              console.error('Dynamic injection failed:', injectErr);
+              reject(new Error(msg));
+            });
+          } else {
+            console.error(`Error sending message to tab ${tabId}:`, msg);
+            reject(new Error(msg));
+          }
         } else {
           resolve(response);
         }
@@ -287,6 +310,26 @@ function sendMessageToTab(tabId, message) {
       reject(new Error(error.message || 'Unknown error sending message'));
     }
   });
+}
+
+// Ensure content script is present in tab before messaging heavy workflow
+async function ensureContentScript(tabId) {
+  try {
+    await sendMessageToTab(tabId, { action: 'ping' }); // cheap test
+    return true; // already there
+  } catch (e) {
+    // Attempt injection
+    try {
+      await chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] }).catch(()=>{});
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+      // Small delay to allow script init
+      await new Promise(r => setTimeout(r, 50));
+      return true;
+    } catch (injErr) {
+      console.error('ensureContentScript failed injection:', injErr);
+      return false;
+    }
+  }
 }
 
 // Create a term frequency map for the text
@@ -534,9 +577,22 @@ async function processLicenseCheck(selectedText) {
   activeScans.add(originTabId);
   
   try {
-    // Show UI and clear previous results
-    await sendMessageToTab(originTabId, { action: 'showUI' });
-    await sendMessageToTab(originTabId, { action: 'clearResults' });
+    // Make sure content script is available
+    const ready = await ensureContentScript(originTabId);
+    if (!ready) {
+      console.error('Content script not available after injection attempts.');
+      return;
+    }
+    // Show UI and clear previous results with retry
+    for (const m of ['showUI','clearResults']) {
+      try {
+        await sendMessageToTab(originTabId, { action: m });
+      } catch (msgErr) {
+        console.warn('Retrying message', m, 'after brief delay due to', msgErr.message);
+        await new Promise(r=>setTimeout(r,100));
+        await sendMessageToTab(originTabId, { action: m });
+      }
+    }
     
     // Progress callback for reporting scan progress
     const sendProgress = async (progress) => {
@@ -1013,20 +1069,56 @@ function sendProgressUpdate(progress, message, complete = false) {
 // Update the action click handler to ensure connection before execution
 chrome.action.onClicked.addListener(async (tab) => {
   try {
-    // Make sure we're on a supported page
     const url = tab.url || '';
-    if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') || 
+    if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') ||
         url.startsWith('about:') || url.startsWith('edge://')) {
       console.warn('Cannot run on this page type:', url);
       return;
     }
-    
+
+    // Collect selection info from all accessible frames (longest selection wins)
     chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      function: checkedLicenses
+      target: { tabId: tab.id, allFrames: true },
+      func: () => {
+        try {
+          const sel = window.getSelection();
+          if (sel && sel.toString().trim()) {
+            return {
+              text: sel.toString(),
+              inIframe: window.top !== window,
+              frameUrl: location.href
+            };
+          }
+        } catch (e) {
+          // ignore frame errors
+        }
+        return null;
+      }
+    }).then(results => {
+      if (!results || !Array.isArray(results)) {
+        showNotification(tab.id, 'No selection found.', 'warning');
+        return;
+      }
+      // Pick longest non-null selection
+      const candidates = results.map(r => r.result).filter(r => r && r.text && r.text.trim());
+      if (candidates.length === 0) {
+        showNotification(tab.id, 'Please select text before running license check.', 'warning');
+        return;
+      }
+      const best = candidates.reduce((a, b) => (b.text.length > a.text.length ? b : a));
+
+      // Send single message to existing handler (adds iframe metadata for future use)
+  // Directly initiate processing instead of round-trip messaging
+      originTabId = tab.id;
+      // Ensure content script/UI is present before processing (attempt a lightweight showUI message)
+      sendMessageToTab(tab.id, { action: 'showUI' })
+        .catch(() => Promise.resolve()) // ignore; injection fallback happens in sendMessageToTab
+        .finally(() => {
+          processLicenseCheck(best.text);
+        });
     }).catch(err => {
-      console.error('Script execution error:', err);
-      showNotification(tab.id, "Error executing script: " + (err.message || "Unknown error"), "error");
+      console.error('Selection collection error:', err);
+      showNotification(tab.id, 'Error gathering selection: ' + (err.message || 'Unknown error'), 'error');
     });
   } catch (err) {
     console.error('Error handling action click:', err);
