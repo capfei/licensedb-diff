@@ -103,12 +103,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     document.getElementById('license-diff-url').innerHTML = '';
     document.getElementById('license-diff-display').innerHTML = '';
     
-    const progressBar = document.getElementById('license-diff-progress');
-    progressBar.style.width = '0%';
-    progressBar.classList.add('animating'); // Start animation
-    
+  const progressBar = document.getElementById('license-diff-progress');
+  // Reset progress
+  progressBar.classList.remove('animating');
+  progressBar.classList.add('no-transition');
+  progressBar.style.width = '0%';
+  // Force reflow so the browser applies width without transition
+  void progressBar.offsetWidth;
+  progressBar.classList.remove('no-transition');
+
     document.getElementById('license-diff-status').innerText = 'Starting license comparison...';
-    
+
     // Reset the global matches array
     matches = [];
     
@@ -119,7 +124,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const progressBar = document.getElementById('license-diff-progress');
     
     // Add animation class if not already there
-    if (!progressBar.classList.contains('animating')) {
+    if (!progressBar.classList.contains('animating') && progressPercent > 0) {
       progressBar.classList.add('animating');
     }
     

@@ -73,6 +73,11 @@
   transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* Disable transition helper class (used during reset to prevent reverse animation) */
+#license-diff-progress.no-transition {
+  transition: none !important;
+}
+
 /* Create a separate class for the animated state */
 #license-diff-progress.animating {
   background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.15) 25%, transparent 25%, 
