@@ -1,11 +1,40 @@
+// Background script entry
+'use strict';
 console.log('Background script loaded.');
 
 chrome.action.setBadgeText({ text: 'Diff' });
 
 import DiffMatchPatch from "./diff_match_patch.js";
 
-var originTabId; // Store the ID of the tab that initiated the license check
-var dmp = new DiffMatchPatch();
+// configuration constants
+const CONFIG = {
+  scan: {
+    maxResults: 10,
+    finalThresholdPct: 15,
+    baseApproxThresholdPct: 10,
+    maxDiffCandidates: 120,
+    batchSize: 60,
+    longText:   { length: 5000, diffTimeout: 0.05, approxAdd: 0,  maxDiff: 30 },
+    mediumText: { length: 2000, diffTimeout: 0.10, approxAdd: 2,  maxDiff: 50 },
+    shortText:  { diffTimeout: 0.15, approxAdd: 0,  maxDiff: 80 }
+  },
+  quickFilter: {
+    minLengthRatio: 0.5,
+    maxLengthRatio: 2.0,
+    overlapFraction: 0.20
+  },
+  cache: {
+    updateIntervalMs: 14 * 24 * 60 * 60 * 1000
+  },
+  updates: {
+    periodicAlarmMinutes: 60 * 24
+  }
+};
+
+let originTabId; // Store the ID of the tab that initiated the license check
+const dmp = new DiffMatchPatch();
+// In-memory cache of license term-frequency vectors (populated on demand)
+let licenseVectorsCache = null; // { license_key: { word: freq, ... } }
 
 // Track which tabs are currently running scans
 const activeScans = new Set();
@@ -13,7 +42,10 @@ const activeScans = new Set();
 // Database version - increment when structure changes
 const DB_VERSION = 2;
 
-// Open or create an IndexedDB database with updated version
+/**
+ * Open (and create/upgrade) the IndexedDB database.
+ * @returns {Promise<IDBDatabase>}
+ */
 function openDatabase() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open('LicenseDB', DB_VERSION);
@@ -44,55 +76,57 @@ function openDatabase() {
   });
 }
 
+/**
+ * Promisify a standard IDB request.
+ * @template T
+ * @param {IDBRequest<T>} request
+ * @returns {Promise<T>}
+ */
+function promisifyRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = e => resolve(e.target.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
 // Check if database is initialized
 async function isDatabaseInitialized() {
   try {
     const db = await openDatabase();
-    
-    return new Promise((resolve) => {
-      const transaction = db.transaction(['status'], 'readonly');
-      const store = transaction.objectStore('status');
-      const request = store.get('initialization');
-      
-      request.onsuccess = (event) => {
-        const result = event.target.result;
-        resolve(result && result.completed === true);
-      };
-      
-      request.onerror = () => {
-        resolve(false);
-      };
-    });
+    const tx = db.transaction(['status'], 'readonly');
+    const store = tx.objectStore('status');
+    try {
+      const record = await promisifyRequest(store.get('initialization'));
+      return !!(record && record.completed === true);
+    } catch {
+      return false;
+    }
   } catch (error) {
     console.error('Error checking database initialization:', error);
     return false;
   }
 }
 
-// Mark database as initialized
+/**
+ * Persist the initialization status flag.
+ * @returns {Promise<boolean>}
+ */
 async function markDatabaseInitialized() {
   try {
     const db = await openDatabase();
-    
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction(['status'], 'readwrite');
-      const store = transaction.objectStore('status');
-      const request = store.put({ 
-        id: 'initialization', 
-        completed: true,
-        timestamp: new Date().toISOString() 
-      });
-      
-      request.onsuccess = () => resolve(true);
-      request.onerror = (error) => reject(error);
-    });
+    const tx = db.transaction(['status'], 'readwrite');
+    const store = tx.objectStore('status');
+    await promisifyRequest(store.put({
+      id: 'initialization',
+      completed: true,
+      timestamp: new Date().toISOString()
+    }));
+    return true;
   } catch (error) {
     console.error('Error marking database as initialized:', error);
     return false;
   }
 }
-
-// Function to preload all license data
 async function preloadLicenseDatabase() {
   try {
     // Check if already initialized
@@ -118,11 +152,7 @@ async function preloadLicenseDatabase() {
     const db = await openDatabase();
     const metadataStore = db.transaction(['metadata'], 'readwrite')
       .objectStore('metadata');
-    await new Promise((resolve, reject) => {
-      const request = metadataStore.put({ id: 'index', data: licenses });
-      request.onsuccess = () => resolve();
-      request.onerror = (error) => reject(error);
-    });
+  await promisifyRequest(metadataStore.put({ id: 'index', data: licenses }));
     
     // Process licenses in batches
     const batchSize = 50;
@@ -139,26 +169,22 @@ async function preloadLicenseDatabase() {
           // Fetch and store the license details
           const licenseUrl = `https://scancode-licensedb.aboutcode.org/${license.json}`;
           const licenseData = await fetchWithCache(licenseUrl, license.license_key, 'licenses');
+          // Normalize license text before storing vectors and diffs
+          if (licenseData && licenseData.text) {
+            licenseData.text = normalizeLicenseText(licenseData.text);
+          }
           
           // Store in licenses store
           const licenseStore = db.transaction(['licenses'], 'readwrite')
             .objectStore('licenses');
-          await new Promise((resolve, reject) => {
-            const request = licenseStore.put({ license_key: license.license_key, data: licenseData });
-            request.onsuccess = () => resolve();
-            request.onerror = (error) => reject(error);
-          });
+          await promisifyRequest(licenseStore.put({ license_key: license.license_key, data: licenseData }));
           
           // Pre-calculate and store the license text vector
           if (licenseData.text) {
             const vector = createTextVector(licenseData.text);
             const vectorStore = db.transaction(['vectors'], 'readwrite')
               .objectStore('vectors');
-            await new Promise((resolve, reject) => {
-              const request = vectorStore.put({ license_key: license.license_key, data: vector });
-              request.onsuccess = () => resolve();
-              request.onerror = (error) => reject(error);
-            });
+            await promisifyRequest(vectorStore.put({ license_key: license.license_key, data: vector }));
           }
         } catch (error) {
           failures++;
@@ -199,65 +225,33 @@ async function preloadLicenseDatabase() {
 // Function to fetch data with IndexedDB caching
 async function fetchWithCache(url, cacheKey, storeName) {
   const db = await openDatabase();
-
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction([storeName], 'readonly');
-    const store = transaction.objectStore(storeName);
-    const request = store.get(cacheKey);
-
-    request.onsuccess = (event) => {
-      if (event.target.result) {
-        resolve(event.target.result.data);
-      } else {
-        // Fetch from the network
-        fetch(url)
-          .then((response) => {
-            if (!response.ok) {
-              throw new Error(`Failed to fetch ${url}: ${response.statusText}`);
-            }
-            
-            // Check content type to verify it's JSON
-            const contentType = response.headers.get('content-type');
-            if (!contentType || !contentType.includes('application/json')) {
-              console.warn(`Warning: ${url} returned non-JSON content type: ${contentType}`);
-            }
-            
-            return response.text().then(text => {
-              try {
-                // Try to parse the text as JSON
-                return JSON.parse(text);
-              } catch (e) {
-                console.error(`Error parsing JSON from ${url}:`, e);
-                console.error(`Response starts with: ${text.substring(0, 100)}...`);
-                throw new Error(`Invalid JSON response from ${url}`);
-              }
-            });
-          })
-          .then((data) => {
-            // Cache the data
-            const putTransaction = db.transaction([storeName], 'readwrite');
-            const putStore = putTransaction.objectStore(storeName);
-            const putRequest = putStore.put({ [storeName === 'metadata' ? 'id' : 'license_key']: cacheKey, data });
-
-            putRequest.onsuccess = () => {
-              resolve(data);
-            };
-
-            putRequest.onerror = (event) => {
-              reject(`IndexedDB put error: ${event.target.errorCode}`);
-            };
-          })
-          .catch((error) => {
-            console.error(`Error fetching or processing ${url}:`, error);
-            reject(error);
-          });
-      }
-    };
-
-    request.onerror = (event) => {
-      reject(`IndexedDB get error: ${event.target.errorCode}`);
-    };
-  });
+  const transaction = db.transaction([storeName], 'readonly');
+  const store = transaction.objectStore(storeName);
+  try {
+    const cached = await promisifyRequest(store.get(cacheKey));
+    if (cached) return cached.data;
+  } catch {/* ignore */}
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.statusText}`);
+  const contentType = response.headers.get('content-type');
+  if (!contentType || !contentType.includes('application/json')) {
+    console.warn(`Warning: ${url} returned non-JSON content type: ${contentType}`);
+  }
+  const text = await response.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    console.warn(`Warning: Failed to parse JSON from ${url}, returning raw text`);
+    data = { text };
+  }
+  if (data && data.text) data.text = normalizeLicenseText(data.text);
+  try {
+    const writeTx = db.transaction([storeName], 'readwrite');
+    const writeStore = writeTx.objectStore(storeName);
+    await promisifyRequest(writeStore.put({ key: cacheKey, data }));
+  } catch {/* non-fatal */}
+  return data;
 }
 
 // Function to show a notification in the tab
@@ -280,7 +274,6 @@ function sendMessageToTab(tabId, message) {
           // Attempt one-time dynamic injection if content script missing
           if (msg.includes('Could not establish connection. Receiving end does not exist')) {
             console.warn('Content script not found in tab ' + tabId + ', attempting dynamic injection...');
-            // Try injecting JS and CSS then resend once
             Promise.all([
               chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] }).catch(()=>{}),
               chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] })
@@ -315,8 +308,8 @@ function sendMessageToTab(tabId, message) {
 // Ensure content script is present in tab before messaging heavy workflow
 async function ensureContentScript(tabId) {
   try {
-    await sendMessageToTab(tabId, { action: 'ping' }); // cheap test
-    return true; // already there
+  await sendMessageToTab(tabId, { action: 'ping' }); // cheap test
+  return true; // already there
   } catch (e) {
     // Attempt injection
     try {
@@ -346,60 +339,97 @@ function createTextVector(text) {
   return vector;
 }
 
-// Calculate Dice coefficient for text similarity
-function calculateDiceCoefficient(vector1, vector2) {
-  // Get the sets of terms
-  const keys1 = new Set(Object.keys(vector1));
-  const keys2 = new Set(Object.keys(vector2));
-  
-  // Calculate intersection size
-  let intersectionSize = 0;
-  for (const key of keys1) {
-    if (keys2.has(key)) {
-      intersectionSize++;
-    }
+// Normalize license text before storing
+function normalizeLicenseText(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text
+    .replace(/\u00a0/g, ' ')        // replace non-breaking spaces
+    .replace(/[ \t]{2,}/g, ' ')     // collapse multiple spaces/tabs
+    .trim();                        // trim ends
+}
+
+// Compute character similarity using existing diff (sum of equal segment lengths / average length)
+function computeCharSimilarityFromDiff(diff, lenA, lenB) {
+  if (!diff || !diff.length) return 0;
+  let same = 0;
+  for (const tuple of diff) {
+    // tuple is a diff_match_patch.Diff object with numeric keys 0 (op) and 1 (text)
+    const op = tuple[0];
+    const data = tuple[1] || '';
+    if (op === 0) same += data.length;
   }
-  
-  // Calculate Dice coefficient: 2*|intersection| / (|set1| + |set2|)
-  const diceCoefficient = (2 * intersectionSize) / (keys1.size + keys2.size);
-  
-  // Convert to percentage
-  return diceCoefficient * 100;
+  const denom = (lenA + lenB) / 2 || 1;
+  return same / denom;
 }
 
 // Quick similarity check for pre-filtering
 function quickSimilarityCheck(textVector, licenseVector) {
-  // Check if vectors share a minimum percentage of terms
   const textKeys = Object.keys(textVector);
   const licenseKeys = Object.keys(licenseVector);
-  
-  // Check length similarity first
-  const lengthRatio = textKeys.length / licenseKeys.length;
-  if (lengthRatio < 0.5 || lengthRatio > 2) {
-    return false;
-  }
-  
-  // Create sets for faster intersection calculation
+  const lengthRatio = textKeys.length / (licenseKeys.length || 1);
+  if (lengthRatio < CONFIG.quickFilter.minLengthRatio || lengthRatio > CONFIG.quickFilter.maxLengthRatio) return false;
   const textKeySet = new Set(textKeys);
-  const licenseKeySet = new Set(licenseKeys);
-  
-  // Calculate a quick rough estimate of Dice coefficient
-  let intersectionSize = 0;
-  let minIntersectionNeeded = Math.min(textKeySet.size, licenseKeySet.size) * 0.2;
-  
-  for (const key of textKeySet) {
-    if (licenseKeySet.has(key)) {
-      intersectionSize++;
-      if (intersectionSize >= minIntersectionNeeded) {
-        return true;
-      }
+  let intersection = 0;
+  const minNeeded = Math.min(textKeys.length, licenseKeys.length) * CONFIG.quickFilter.overlapFraction; // overlap fraction of smaller set
+  for (const k of textKeySet) {
+    if (licenseVector[k] !== undefined) {
+      intersection++;
+      if (intersection >= minNeeded) return true;
     }
   }
-  
   return false;
 }
 
-// Function to fetch licenses and compare text
+// Approximate character similarity using token overlap without running diff
+// We estimate overlapping characters as sum(min(freqA, freqB) * word.length) over shared words
+// Returns a fraction (0..1) similar in scale to computeCharSimilarityFromDiff
+function approximateCharSimilarity(textVector, licenseVector, wordLenCache, lenSelected, lenLicense) {
+  let sharedChars = 0;
+  for (const word in textVector) {
+    if (licenseVector[word]) {
+      const overlapFreq = Math.min(textVector[word], licenseVector[word]);
+      const wlen = wordLenCache[word] || word.length; // wordLenCache speeds repeated lookups
+      sharedChars += overlapFreq * wlen;
+    }
+  }
+  const denom = (lenSelected + lenLicense) / 2 || 1;
+  return sharedChars / denom;
+}
+
+// Load all stored vectors once (or as many as available). Missing vectors can be generated lazily.
+async function loadAllVectors() {
+  if (licenseVectorsCache) return licenseVectorsCache;
+  licenseVectorsCache = {};
+  try {
+    const db = await openDatabase();
+    await new Promise((resolve) => {
+      const tx = db.transaction(['vectors'], 'readonly');
+      const store = tx.objectStore('vectors');
+      const request = store.openCursor();
+      request.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          licenseVectorsCache[cursor.key] = cursor.value.data;
+          cursor.continue();
+        } else {
+          resolve();
+        }
+      };
+      request.onerror = () => resolve(); // fail soft
+    });
+  } catch (e) {
+    console.warn('Vector preload skipped due to error:', e);
+  }
+  return licenseVectorsCache;
+}
+
+/**
+ * Main similarity pipeline: approximate prefilter then diff refinement.
+ * Ensures up to CONFIG.scan.maxResults returned; fills remaining with lower scores if needed.
+ * @param {string} text Raw user-selected text
+ * @param {(progress: {checked:number,total:number,promising:number,message:string})=>void} sendProgress progress callback
+ * @returns {Promise<Array<{license:string,name:string,spdx:string,charSimilarity:string,score:string,diff:string,link:string}>>}
+ */
 async function fetchLicenses(text, sendProgress) {
   // Check if database is initialized
   const isInitialized = await isDatabaseInitialized();
@@ -426,135 +456,155 @@ async function fetchLicenses(text, sendProgress) {
     // Filter out deprecated licenses
     const licenses = licenseList.filter(obj => !obj.is_deprecated);
     
-    // Maximum number of matches to show in dropdown
-    const MAX_RESULTS = 10;
-    
-    // Create vector for the selected text
-    const textVector = createTextVector(text);
-    
+  const { maxResults: MAX_RESULTS, finalThresholdPct: FINAL_THRESHOLD, baseApproxThresholdPct: BASE_APPROX_THRESHOLD, maxDiffCandidates: MAX_DIFF_CANDIDATES, batchSize: batchSize } = CONFIG.scan;
+
+    // Precompute selected text artifacts
+  const selectedNormalized = normalizeLicenseText(text);
+  const selectedLength = selectedNormalized.length;
+  // Dynamic tuning based on selection length (longer text -> fewer diffs, higher approx threshold, tighter timeout)
+  // Relax threshold for very long texts so we gather enough candidates
+  let approxThreshold;
+  let dynamicMaxDiff;
+  if (selectedLength > CONFIG.scan.longText.length) {
+    approxThreshold = BASE_APPROX_THRESHOLD + CONFIG.scan.longText.approxAdd;
+    dynamicMaxDiff = CONFIG.scan.longText.maxDiff;
+  } else if (selectedLength > CONFIG.scan.mediumText.length) {
+    approxThreshold = BASE_APPROX_THRESHOLD + CONFIG.scan.mediumText.approxAdd;
+    dynamicMaxDiff = CONFIG.scan.mediumText.maxDiff;
+  } else {
+    approxThreshold = BASE_APPROX_THRESHOLD + CONFIG.scan.shortText.approxAdd;
+    dynamicMaxDiff = CONFIG.scan.shortText.maxDiff;
+  }
+  dynamicMaxDiff = Math.min(dynamicMaxDiff, MAX_DIFF_CANDIDATES);
+    const textVector = createTextVector(selectedNormalized);
+  const wordLenCache = {}; // cache word lengths *once*
+    for (const w in textVector) { wordLenCache[w] = w.length; }
+
     const totalLicenses = licenses.length;
     let checkedLicenses = 0;
-    let promising = 0;
-    
-    // Send initial progress
-    sendProgress({ checked: checkedLicenses, total: totalLicenses, promising });
-    
-    // Process licenses in batches for better performance
-    const batchSize = 30;
-    const potentialMatches = [];
-    
-    // Store vectors to avoid recalculating
-    const licenseVectors = {};
-    
-    // PHASE 1: Score all licenses without generating diffs
+    let approxPromising = 0; // passes quick + approx filter
+    let diffEvaluated = 0;   // how many we actually diff
+
+    sendProgress({ checked: checkedLicenses, total: totalLicenses, promising: approxPromising, message: 'Scanning (approx phase)...' });
+
+  await loadAllVectors(); // ensure cache initialized
+    const approxCandidates = [];
+
+    // PHASE 1: approximate similarity (no diff)
     for (let i = 0; i < licenses.length; i += batchSize) {
       const batch = licenses.slice(i, i + batchSize);
-      
-      // Process batch in parallel
-      const batchResults = await Promise.all(
-        batch.map(async (license) => {
+      const batchResults = await Promise.all(batch.map(async (license) => {
+        try {
+          const licenseUrl = `https://scancode-licensedb.aboutcode.org/${license.json}`;
+          let licenseData;
           try {
-            // Fetch the license text with caching
-            const licenseUrl = `https://scancode-licensedb.aboutcode.org/${license.json}`;
-            let licenseData;
-            
-            try {
-              licenseData = await fetchWithCache(
-                licenseUrl,
-                license.license_key,
-                'licenses'
-              );
-            } catch (fetchError) {
-              console.warn(`Skipping license ${license.license_key} due to fetch error:`, fetchError.message);
-              return null;
-            }
-
-            const licenseText = licenseData.text;
-            const licenseName = licenseData.name;
-
-            if (!licenseText) {
-              return null;
-            }
-            
-            // Create vector for the license text
-            const licenseVector = licenseVectors[license.license_key] || createTextVector(licenseText);
-            licenseVectors[license.license_key] = licenseVector;
-            
-            // Quick pre-filtering check
-            if (!quickSimilarityCheck(textVector, licenseVector)) {
-              return null;
-            }
-            
-            // Candidate is promising - do more detailed comparison
-            promising++;
-            
-            // Calculate the match score with Dice coefficient
-            const score = calculateDiceCoefficient(textVector, licenseVector);
-            
-            if (score >= 15) { // Get results with at least 15% match using Dice
-              return {
-                license: license.license_key,
-                name: licenseName,
-                spdx: license.spdx_license_key,
-                score: score.toFixed(2),
-                licenseText: licenseText  // Store text for later diff generation
-              };
-            }
-            
-            return null;
-          } catch (error) {
-            console.error(`Error processing license ${license.license_key}:`, error);
+            licenseData = await fetchWithCache(licenseUrl, license.license_key, 'licenses');
+          } catch (fetchError) {
+            // Skip quietly
             return null;
           }
-        })
-      );
-      
-      // Filter out nulls and add matches
-      const validMatches = batchResults.filter(Boolean);
-      potentialMatches.push(...validMatches);
-      
-      // Update progress
+          const licenseText = licenseData.text;
+          if (!licenseText) return null;
+          const normalizedText = normalizeLicenseText(licenseText);
+          let licenseVector = licenseVectorsCache[license.license_key];
+          if (!licenseVector) {
+            // Generate, store in both caches (memory + IndexedDB) for future speed
+            licenseVector = createTextVector(normalizedText);
+            licenseVectorsCache[license.license_key] = licenseVector;
+            // Persist asynchronously (fire and forget)
+            (async () => {
+              try {
+                const db = await openDatabase();
+                const tx = db.transaction(['vectors'], 'readwrite');
+                tx.objectStore('vectors').put({ license_key: license.license_key, data: licenseVector });
+              } catch (e) {}
+            })();
+          }
+          // Quick structural filter
+          if (!quickSimilarityCheck(textVector, licenseVector)) return null;
+          const approx = approximateCharSimilarity(textVector, licenseVector, wordLenCache, selectedLength, normalizedText.length) * 100;
+          if (approx < approxThreshold) return null;
+          approxPromising++;
+          return {
+            license: license.license_key,
+            name: licenseData.name,
+            spdx: license.spdx_license_key,
+            approxSimilarity: approx,
+            licenseText: normalizedText
+          };
+        } catch (e) {
+          return null;
+        }
+      }));
+      const valid = batchResults.filter(Boolean);
+      approxCandidates.push(...valid);
       checkedLicenses += batch.length;
-      
-      // Update progress
-      sendProgress({ 
-        checked: checkedLicenses, 
-        total: totalLicenses,
-        promising
-      });
+      sendProgress({ checked: checkedLicenses, total: totalLicenses, promising: approxPromising, message: 'Scanning (approx phase)...' });
     }
 
-    // Sort all matches by score (highest first)
-    potentialMatches.sort((a, b) => b.score - a.score);
+    // Sort by approximate similarity descending and keep top slice for expensive diff
+    approxCandidates.sort((a, b) => b.approxSimilarity - a.approxSimilarity);
+  let toRefine = approxCandidates.slice(0, dynamicMaxDiff);
+  sendProgress({ checked: checkedLicenses, total: totalLicenses, promising: toRefine.length, message: `Refining (diff phase: ${toRefine.length} candidates)...` });
 
-    // PHASE 2: Only generate diffs for the top matches
-    const topMatches = potentialMatches.slice(0, MAX_RESULTS);
-    
-    // Generate diffs only for top matches
-    sendProgress({ 
-      checked: checkedLicenses, 
-      total: totalLicenses,
-      promising,
-      message: "Generating diffs for top matches..."
-    });
-    
-    // Process diffs in sequence to avoid high memory usage
-    for (let i = 0; i < topMatches.length; i++) {
-      const match = topMatches[i];
-      // Generate diff using DiffMatchPatch
-      var d = dmp.diff_main(match.licenseText, text);
-      dmp.diff_cleanupEfficiency(d);
-      match.diff = dmp.diff_prettyHtml(d);
-      // Remove the license text to save memory
-      delete match.licenseText;
+  // Dynamic diff timeout for speed (seconds)
+  const prevTimeout = dmp.Diff_Timeout;
+  dmp.Diff_Timeout = selectedLength > CONFIG.scan.longText.length
+    ? CONFIG.scan.longText.diffTimeout
+    : (selectedLength > CONFIG.scan.mediumText.length
+        ? CONFIG.scan.mediumText.diffTimeout
+        : CONFIG.scan.shortText.diffTimeout);
+
+    const refined = [];
+    const lowScore = [];
+    const runDiffs = async (candidates) => {
+      for (const candidate of candidates) {
+        try {
+          const diffForChar = dmp.diff_main(candidate.licenseText, selectedNormalized);
+          dmp.diff_cleanupEfficiency(diffForChar);
+          const charSim = computeCharSimilarityFromDiff(diffForChar, candidate.licenseText.length, selectedLength) * 100;
+          const displayDiff = dmp.diff_prettyHtml(diffForChar);
+          const rec = {
+            license: candidate.license,
+            name: candidate.name,
+            spdx: candidate.spdx,
+            charSimilarity: charSim.toFixed(2),
+            score: charSim.toFixed(2),
+            diff: displayDiff,
+            link: `<a href=\"https://scancode-licensedb.aboutcode.org/${candidate.license}.html\" target=\"_blank\">${candidate.name}</a> (${candidate.spdx})`
+          };
+          if (charSim >= FINAL_THRESHOLD) refined.push(rec); else lowScore.push(rec);
+        } catch (e) {
+          // ignore failed diff
+        }
+        diffEvaluated++;
+        if (diffEvaluated % 10 === 0) {
+          sendProgress({ checked: checkedLicenses, total: totalLicenses, promising: candidates.length, message: `Refining diffs ${diffEvaluated}/${candidates.length}...` });
+        }
+        if (refined.length >= MAX_RESULTS) break; // early exit
+      }
+    };
+
+    await runDiffs(toRefine);
+
+    // If we still have fewer than desired results and more approx candidates remain, expand once
+    if (refined.length < MAX_RESULTS && approxCandidates.length > toRefine.length) {
+      const expansion = approxCandidates.slice(toRefine.length, Math.min(approxCandidates.length, dynamicMaxDiff * 2, MAX_DIFF_CANDIDATES));
+      if (expansion.length) {
+        sendProgress({ checked: checkedLicenses, total: totalLicenses, promising: expansion.length, message: `Expanding refinement (+${expansion.length})...` });
+        await runDiffs(expansion);
+      }
     }
-    
-    // Add link property to each match
-    topMatches.forEach(match => {
-      match.link = `<a href="https://scancode-licensedb.aboutcode.org/${match.license}.html" target="_blank">${match.name}</a> (${match.spdx})`;
-    });
 
-    return topMatches;
+    // Restore previous timeout
+    dmp.Diff_Timeout = prevTimeout;
+
+    refined.sort((a, b) => parseFloat(b.charSimilarity) - parseFloat(a.charSimilarity));
+    if (refined.length < MAX_RESULTS && lowScore.length) {
+      lowScore.sort((a, b) => parseFloat(b.charSimilarity) - parseFloat(a.charSimilarity));
+      refined.push(...lowScore.slice(0, MAX_RESULTS - refined.length));
+    }
+    return refined.slice(0, MAX_RESULTS);
   } catch (error) {
     console.error("Error in fetchLicenses:", error);
     throw error;
@@ -610,6 +660,7 @@ async function processLicenseCheck(selectedText) {
     const matches = await fetchLicenses(selectedText, sendProgress);
     
     if (matches && matches.length > 0) {
+      console.log('Sending showResults with', matches.length, 'matches. Top license:', matches[0]?.license);
       // Report the matches to the content script
       await sendMessageToTab(originTabId, { 
         action: 'showResults', 
@@ -774,69 +825,23 @@ async function getDatabaseInfo() {
 // Function to get LicenseDB version from GitHub API
 async function getLicenseDbVersionFromGitHub() {
   try {
-    // Check if we have a cached version in storage
-    const cachedVersion = await getCachedLicenseDbVersion();
-    
-    // If we have a cached version that's less than 1 day old, use it
-    if (cachedVersion && cachedVersion.timestamp) {
-      const cacheTime = new Date(cachedVersion.timestamp).getTime();
-      const now = new Date().getTime();
-      const oneDayInMs = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
-      
-      if (now - cacheTime < oneDayInMs) {
-        console.log('Using cached LicenseDB version');
-        return cachedVersion.version;
-      }
+    const cached = await getCachedLicenseDbVersion();
+    if (cached && cached.timestamp) {
+      const ageMs = Date.now() - new Date(cached.timestamp).getTime();
+      if (ageMs < 24 * 60 * 60 * 1000) return cached.version || null; // cache < 1 day
     }
-    
-    // Fetch the latest version from GitHub API
-    console.log('Fetching LicenseDB version from GitHub API');
-    const response = await fetch('https://api.github.com/repos/aboutcode-org/scancode-toolkit/releases/latest');
-    
-    if (!response.ok) {
-      throw new Error(`Failed to fetch from GitHub API: ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    const version = data.name || data.tag_name || 'Unknown';
-    
-    // Cache the version for future use
+    // Simple heuristic: fetch index.json and derive a hash/length to act as a pseudo version
+    const resp = await fetch('https://scancode-licensedb.aboutcode.org/index.json', { cache: 'no-cache' });
+    if (!resp.ok) throw new Error('Failed to fetch license index for version');
+    const text = await resp.text();
+    // lightweight hash
+    let hash = 0; for (let i=0;i<text.length;i++) { hash = (hash * 31 + text.charCodeAt(i)) >>> 0; }
+    const version = `idx-${hash}-${text.length}`;
     await cacheLicenseDbVersion(version);
-    
     return version;
-  } catch (error) {
-    console.error('Error fetching LicenseDB version from GitHub:', error);
-    
-    // If we have a cached version, return it even if it's old
-    const cachedVersion = await getCachedLicenseDbVersion();
-    if (cachedVersion && cachedVersion.version) {
-      return `${cachedVersion.version} (cached)`;
-    }
-    
-    return 'Error fetching version';
-  }
-}
-
-// Cache the LicenseDB version
-async function cacheLicenseDbVersion(version) {
-  try {
-    const db = await openDatabase();
-    
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction(['status'], 'readwrite');
-      const store = transaction.objectStore('status');
-      const request = store.put({
-        id: 'licensedb_version',
-        version: version,
-        timestamp: new Date().toISOString()
-      });
-      
-      request.onsuccess = () => resolve(true);
-      request.onerror = (error) => reject(error);
-    });
-  } catch (error) {
-    console.error('Error caching LicenseDB version:', error);
-    return false;
+  } catch (e) {
+    console.warn('Could not determine LicenseDB version:', e.message || e);
+    return null;
   }
 }
 
@@ -844,22 +849,25 @@ async function cacheLicenseDbVersion(version) {
 async function getCachedLicenseDbVersion() {
   try {
     const db = await openDatabase();
-    
-    return new Promise((resolve) => {
-      const transaction = db.transaction(['status'], 'readonly');
-      const store = transaction.objectStore('status');
-      const request = store.get('licensedb_version');
-      
-      request.onsuccess = (event) => {
-        const result = event.target.result;
-        resolve(result || null);
-      };
-      
-      request.onerror = () => resolve(null);
-    });
+    const tx = db.transaction(['status'], 'readonly');
+    const store = tx.objectStore('status');
+    try {
+      return await promisifyRequest(store.get('licensedb_version'));
+    } catch { return null; }
   } catch (error) {
     console.error('Error getting cached LicenseDB version:', error);
     return null;
+  }
+}
+
+async function cacheLicenseDbVersion(version) {
+  try {
+    const db = await openDatabase();
+    const tx = db.transaction(['status'], 'readwrite');
+    const store = tx.objectStore('status');
+    await promisifyRequest(store.put({ id: 'licensedb_version', version, timestamp: new Date().toISOString() }));
+  } catch (e) {
+    // non-fatal
   }
 }
 
@@ -869,27 +877,27 @@ async function forceUpdateDatabase() {
     // Set badge to indicate update in progress
     chrome.action.setBadgeText({ text: 'Updt' });
     chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' }); // Orange
-    
+
     // Send initial progress to options page
     sendProgressUpdate(0, 'Starting database update...');
-    
+
     // Fetch the license index to check for changes
     sendProgressUpdate(5, 'Fetching license index...');
     const response = await fetch('https://scancode-licensedb.aboutcode.org/index.json', {
       cache: 'no-cache' // Force fresh content
     });
-    
+
     if (!response.ok) {
       throw new Error(`Failed to fetch license index: ${response.statusText}`);
     }
-    
+
     const licenseList = await response.json();
-    
+
     // Filter out deprecated licenses
     const licenses = licenseList.filter(obj => !obj.is_deprecated);
-    
+
     sendProgressUpdate(10, `Found ${licenses.length} non-deprecated licenses`);
-    
+
     // Store the updated index
     const db = await openDatabase();
     const metadataStore = db.transaction(['metadata'], 'readwrite').objectStore('metadata');
@@ -898,29 +906,32 @@ async function forceUpdateDatabase() {
       request.onsuccess = () => resolve();
       request.onerror = (error) => reject(error);
     });
-    
+
     // Process licenses in batches (similar to checkForDatabaseUpdates but with progress updates)
     const batchSize = 50;
     const totalLicenses = licenses.length;
     let processed = 0;
     let failures = 0;
-    
+
     for (let i = 0; i < totalLicenses; i += batchSize) {
       const batch = licenses.slice(i, Math.min(i + batchSize, totalLicenses));
-      
+
       // Process this batch
       await Promise.all(batch.map(async (license) => {
         try {
           // Fetch with no-cache to get fresh content
           const licenseUrl = `https://scancode-licensedb.aboutcode.org/${license.json}`;
           const response = await fetch(licenseUrl, { cache: 'no-cache' });
-          
+
           if (!response.ok) {
             throw new Error(`Failed to fetch ${licenseUrl}: ${response.statusText}`);
           }
-          
+
           const licenseData = await response.json();
-          
+          if (licenseData && licenseData.text) {
+            licenseData.text = normalizeLicenseText(licenseData.text);
+          }
+
           // Store in licenses store
           const licenseStore = db.transaction(['licenses'], 'readwrite').objectStore('licenses');
           await new Promise((resolve, reject) => {
@@ -944,11 +955,11 @@ async function forceUpdateDatabase() {
           console.error(`Error processing license ${license.license_key} during update:`, error);
         }
       }));
-      
+
       // Update progress
       processed += batch.length;
       const percentComplete = Math.round((10 + (processed / totalLicenses) * 85)); // Scale to 10-95%
-      
+
       // Send progress update
       sendProgressUpdate(
         percentComplete,
@@ -958,37 +969,37 @@ async function forceUpdateDatabase() {
       // Update badge to show progress
       chrome.action.setBadgeText({ text: `${Math.round(percentComplete)}%` });
     }
-    
+
     // Record the update timestamp
     sendProgressUpdate(95, 'Finalizing update...');
     await recordUpdateTimestamp();
-    
+
     // Set flag to indicate database is initialized
     await markDatabaseInitialized();
-    
+
     // Also update the licensedb version when forcing an update
     await getLicenseDbVersionFromGitHub();
-    
+
     // Final success
     sendProgressUpdate(100, 'Database update complete', true);
-    
+
     console.log(`License database update completed. Processed ${processed} licenses with ${failures} failures.`);
-    
+
     // Reset badge
     chrome.action.setBadgeText({ text: 'Diff' });
     chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });  // Green
-    
+
     return true;
   } catch (error) {
     console.error('Error updating database:', error);
-    
+
     // Send error progress update
     sendProgressUpdate(0, `Error: ${error.message || 'Unknown error'}`, true);
-    
+
     // Reset badge
     chrome.action.setBadgeText({ text: 'Err' });
     chrome.action.setBadgeBackgroundColor({ color: '#F44336' });  // Red
-    
+
     setTimeout(() => {
       chrome.action.setBadgeText({ text: 'Diff' });
       chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
@@ -1021,35 +1032,35 @@ async function resetDatabase() {
         reject(error);
       };
     });
-    
+
     sendProgressUpdate(20, 'Database deleted. Initializing new database...');
-    
+
     // Reinitialize database
     await preloadLicenseDatabase();
-    
+
     // Final update
     sendProgressUpdate(100, 'Database reset and reinitialized successfully', true);
-    
+
     // Reset badge
     chrome.action.setBadgeText({ text: 'Diff' });
     chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });  // Green
-    
+
     return true;
   } catch (error) {
     console.error('Error resetting database:', error);
-    
+
     // Send error progress update
     sendProgressUpdate(0, `Error: ${error.message || 'Unknown error'}`, true);
-    
+
     // Reset badge
     chrome.action.setBadgeText({ text: 'Err' });
     chrome.action.setBadgeBackgroundColor({ color: '#F44336' });  // Red
-    
+
     setTimeout(() => {
       chrome.action.setBadgeText({ text: 'Diff' });
       chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
     }, 5000);
-    
+
     throw error;
   }
 }
@@ -1128,7 +1139,7 @@ chrome.action.onClicked.addListener(async (tab) => {
 // Extension installation handler
 chrome.runtime.onInstalled.addListener(async (details) => {
   console.log(`Extension ${details.reason}ed.`);
-  
+
   // On fresh install or update, preload the database
   if (details.reason === 'install' || details.reason === 'update') {
     await preloadLicenseDatabase();
@@ -1146,12 +1157,12 @@ chrome.runtime.onStartup.addListener(() => {
 async function isUpdateNeeded() {
   try {
     const db = await openDatabase();
-    
+
     return new Promise((resolve) => {
       const transaction = db.transaction(['status'], 'readonly');
       const store = transaction.objectStore('status');
       const request = store.get('last_update');
-      
+
       request.onsuccess = (event) => {
         const result = event.target.result;
         
@@ -1160,15 +1171,15 @@ async function isUpdateNeeded() {
           resolve(true);
           return;
         }
-        
+
         const lastUpdateTime = new Date(result.timestamp).getTime();
         const currentTime = new Date().getTime();
-        const twoWeeksInMs = 14 * 24 * 60 * 60 * 1000; // 14 days in milliseconds
-        
+        const twoWeeksInMs = CONFIG.cache.updateIntervalMs;
+
         // Check if two weeks have passed since last update
         resolve(currentTime - lastUpdateTime > twoWeeksInMs);
       };
-      
+
       request.onerror = () => {
         console.error('Error checking last update timestamp');
         // If there's an error, assume update is needed
@@ -1185,7 +1196,7 @@ async function isUpdateNeeded() {
 async function recordUpdateTimestamp() {
   try {
     const db = await openDatabase();
-    
+
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(['status'], 'readwrite');
       const store = transaction.objectStore('status');
@@ -1193,7 +1204,7 @@ async function recordUpdateTimestamp() {
         id: 'last_update',
         timestamp: new Date().toISOString()
       });
-      
+
       request.onsuccess = () => resolve(true);
       request.onerror = (error) => reject(error);
     });
@@ -1207,24 +1218,24 @@ async function recordUpdateTimestamp() {
 async function checkForDatabaseUpdates() {
   console.log('Checking if license database needs updating...');
   const needsUpdate = await isUpdateNeeded();
-  
+
   if (needsUpdate) {
     console.log('License database update needed. Starting update process...');
-    
+
     try {
       // Set badge to indicate update in progress
       chrome.action.setBadgeText({ text: 'Updt' });
       chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' }); // Orange
-      
+
       // Fetch the license index to check for changes
       const licenseList = await fetch('https://scancode-licensedb.aboutcode.org/index.json', {
         cache: 'no-cache' // Force fresh content
       }).then(response => response.json());
-      
+
       // Filter out deprecated licenses
       const licenses = licenseList.filter(obj => !obj.is_deprecated);
       console.log(`Found ${licenses.length} non-deprecated licenses during update check`);
-      
+
       // Store the updated index
       const db = await openDatabase();
       const metadataStore = db.transaction(['metadata'], 'readwrite')
@@ -1234,29 +1245,32 @@ async function checkForDatabaseUpdates() {
         request.onsuccess = () => resolve();
         request.onerror = (error) => reject(error);
       });
-      
+
       // Process licenses in batches (reusing logic from preloadLicenseDatabase)
       const batchSize = 50;
       const totalLicenses = licenses.length;
       let processed = 0;
       let failures = 0;
-      
+
       for (let i = 0; i < totalLicenses; i += batchSize) {
         const batch = licenses.slice(i, Math.min(i + batchSize, totalLicenses));
-        
+
         // Process this batch
         await Promise.all(batch.map(async (license) => {
           try {
             // Fetch with no-cache to get fresh content
             const licenseUrl = `https://scancode-licensedb.aboutcode.org/${license.json}`;
             const response = await fetch(licenseUrl, { cache: 'no-cache' });
-            
+
             if (!response.ok) {
               throw new Error(`Failed to fetch ${licenseUrl}: ${response.statusText}`);
             }
-            
+
             const licenseData = await response.json();
-            
+            if (licenseData && licenseData.text) {
+              licenseData.text = normalizeLicenseText(licenseData.text);
+            }
+
             // Store in licenses store
             const licenseStore = db.transaction(['licenses'], 'readwrite')
               .objectStore('licenses');
@@ -1265,7 +1279,7 @@ async function checkForDatabaseUpdates() {
               request.onsuccess = () => resolve();
               request.onerror = (error) => reject(error);
             });
-            
+
             // Pre-calculate and store the license text vector
             if (licenseData.text) {
               const vector = createTextVector(licenseData.text);
@@ -1282,7 +1296,7 @@ async function checkForDatabaseUpdates() {
             console.error(`Error processing license ${license.license_key} during update:`, error);
           }
         }));
-        
+
         // Update progress
         processed += batch.length;
         const percentComplete = Math.round((processed / totalLicenses) * 100);
@@ -1290,12 +1304,12 @@ async function checkForDatabaseUpdates() {
         // Update badge to show progress
         chrome.action.setBadgeText({ text: `${percentComplete}%` });
       }
-      
+
       // Record the update timestamp
       await recordUpdateTimestamp();
       
       console.log(`License database update completed. Processed ${processed} licenses with ${failures} failures.`);
-      
+
       // Reset badge
       chrome.action.setBadgeText({ text: 'Diff' });
       chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });  // Green
@@ -1305,13 +1319,13 @@ async function checkForDatabaseUpdates() {
       console.error('Error updating license database:', error);
       chrome.action.setBadgeText({ text: 'Err' });
       chrome.action.setBadgeBackgroundColor({ color: '#F44336' });  // Red
-      
+
       // Reset badge after a delay
       setTimeout(() => {
         chrome.action.setBadgeText({ text: 'Diff' });
         chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
       }, 5000);
-      
+
       return false;
     }
   } else {
@@ -1325,7 +1339,7 @@ function setupPeriodicUpdates() {
   chrome.alarms.create('checkLicenseDbUpdates', {
     periodInMinutes: 60 * 24 // Check daily, but only update if two weeks have passed
   });
-  
+
   // Also do an immediate check on startup
   checkForDatabaseUpdates().catch(err => {
     console.error('Error during startup update check:', err);
