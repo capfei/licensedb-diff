@@ -1,6 +1,6 @@
 #license-diff-ui {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-  position: fixed;
+  position: fixed !important;
   background-color: #fff;
   top: 20px;
   right: 20px;
@@ -13,7 +13,7 @@
   border-radius: 12px;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.15), 0 2px 10px rgba(0, 0, 0, 0.08);
   padding: 20px;
-  z-index: 999;
+  z-index: 2147483647; /* max */
   overflow: hidden;
   flex-direction: column;
   display: none; /* Hidden by default */
@@ -93,27 +93,50 @@
 }
 
 #license-diff-dropdown {
-  width: 100%;
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  flex: 0 0 auto !important;       /* defeat global flex rules */
+  align-self: stretch !important;  /* defeat grid/flex auto sizing */
   margin-bottom: 16px;
-  padding: 10px 12px;
+  padding: 10px 36px 12px 12px !important;  /* extra bottom pad helps on Windows */
   border-radius: 8px;
   border: 1px solid rgba(0, 0, 0, 0.15);
   font-family: inherit;
-  font-size: 14px;
-  appearance: none;
+  font-size: 14px !important;
+  min-height: 40px !important;
+  line-height: normal !important;
+  box-sizing: border-box !important;
+  height: auto !important;
+  white-space: nowrap !important;
+  text-overflow: ellipsis !important;
+  overflow: hidden !important;
+  color: #333 !important;
+  -webkit-text-fill-color: #333 !important;  /* Safari/Chrome fix */
+  text-indent: 0 !important;
+  letter-spacing: normal !important;
+  word-spacing: normal !important;
+  text-transform: none !important;
+  filter: none !important;
+  transform: none !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
   background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23666666%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.4-12.8z%22%2F%3E%3C%2Fsvg%3E");
   background-repeat: no-repeat;
-  background-position: right 12px top 50%;
+  background-position: right 12px center !important;
   background-size: 10px auto;
   cursor: pointer;
   transition: all 0.2s ease;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
-#license-diff-dropdown:focus {
-  border-color: #4CAF50;
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.15);
+/* Option text visibility (some sites/theme overrides) */
+#license-diff-dropdown option {
+  font-size: 14px !important;
+  line-height: 1.4 !important;
+  color: #333 !important;
+  -webkit-text-fill-color: #333 !important;
+  background-color: #fff !important;
 }
 
 #license-diff-status {
@@ -130,7 +153,7 @@
 }
 
 #license-diff-url a {
-  color: #3d8b3d;
+  color: #439843;
   text-decoration: none;
   font-weight: 500;
   transition: all 0.2s ease;
@@ -178,7 +201,7 @@
 
 /* Notification container - move to the top of the viewport */
 #license-diff-notifications {
-  width: 100%;
+  width: 100% !important;
   margin-bottom: 16px;
   overflow: visible; /* Changed from hidden to allow notifications to be visible */
   position: sticky;  /* Make notifications stick to the top when scrolling */
@@ -188,7 +211,9 @@
 
 /* Individual notification - improved visibility */
 .license-diff-notification {
-  width: calc(100% - 24px);
+  width: calc(100% - 24px) !important;
+  margin: auto !important;
+  padding-inline: inherit !important;
   padding: 12px;
   margin-bottom: 12px;
   border-radius: 8px;
@@ -218,7 +243,7 @@
   to {
     opacity: 0;
     transform: translateY(-10px);
-  }
+}
 }
 
 /* Styling for diff results */
@@ -323,7 +348,7 @@
     color: #155724;
     border-left: 4px solid #28a745;
   }
-  
+
   #license-diff-display {
     background-color: #fafafa;
     border: 1px solid #eee;
@@ -353,119 +378,101 @@
   }
 }
 
+/* High-contrast dark mode overrides (place after your existing dark-mode block) */
 @media (prefers-color-scheme: dark) {
+  /* Surfaces and text */
   #license-diff-ui {
-    background-color: #2d2d2d;
-    color: #e0e0e0;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background-color: #1f1f23;  /* darker surface */
+    color: #f1f5f9;             /* near-white text */
+    border-color: #3b3e46;
   }
-  
-  #license-diff-ui button {
-    color: #ccc;
-  }
-  
-  #license-diff-ui button:hover {
-    background-color: rgba(255, 255, 255, 0.1);
-  }
-  
-  #license-diff-ui h3 {
-    border-bottom-color: #444;
-  }
-  
   #license-diff-status {
-    color: #aaa;
+    color: #cbd5e1;             /* muted but readable on #1f1f23 */
   }
-  
+
+  /* Progress */
   #license-diff-progress-container {
-    background-color: rgba(255, 255, 255, 0.1);
+    background-color: #2b2d31;
   }
-  
   #license-diff-progress {
-    background-color: #6abf69;
+    background-color: #22c55e;  /* brighter green for visibility */
   }
-  
+
+  /* Dropdown */
   #license-diff-dropdown {
-    background-color: #3d3d3d;
-    color: #e0e0e0;
-    border-color: rgba(255, 255, 255, 0.2);
-    background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23cccccc%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.4-12.8z%22%2F%3E%3C%2Fsvg%3E");
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    background-color: #2b2d31;
+    color: #f1f5f9 !important;
+    -webkit-text-fill-color: #f1f5f9 !important;
+    border-color: #475569;
+    background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg xmlns='http://www.w3.org/2000/svg' width='292.4' height='292.4'%3E%3Cpath fill='%23cbd5e1' d='M287 69.4a17.6 17.6 0 0 0-13-5.4H18.4c-5 0-9.3 1.8-12.9 5.4A17.6 17.6 0 0 0 0 82.2c0 5 1.8 9.3 5.4 12.9l128 127.9c3.6 3.6 7.8 5.4 12.8 5.4s9.2-1.8 12.8-5.4L287 95c3.5-3.5 5.4-7.8 5.4-12.8 0-5-1.9-9.2-5.4-12.8z'/%3E%3C/svg%3E");
   }
-  
   #license-diff-dropdown:focus {
-    border-color: #6abf69;
-    box-shadow: 0 0 0 3px rgba(106, 191, 105, 0.25);
+    border-color: #22c55e;
+    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.35);
   }
-  
-  #license-diff-url a {
-    color: #8dd28d;
-  }
-  
-  #license-diff-url a:hover {
-    color: #a8e2a8;
-    border-bottom: 1px dotted #a8e2a8;
-  }
-  
-  #license-diff-display {
-    background-color: #333;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-  }
-  
-  #license-diff-display::-webkit-scrollbar-thumb {
-    background-color: rgba(255, 255, 255, 0.2);
-  }
-  
-  #license-diff-display::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(255, 255, 255, 0.3);
-  }
-  
-  .license-diff-notification.info {
-    background-color: #204251;
-    color: #9bdaf1;
-    border-left: 4px solid #17a2b8;
-  }
-  
-  .license-diff-notification.warning {
-    background-color: #3e3219;
-    color: #ffd970;
-    border-left: 4px solid #ffc107;
-  }
-  
-  .license-diff-notification.error {
-    background-color: #442126;
-    color: #f1adb5;
-    border-left: 4px solid #dc3545;
-  }
-  
-  .license-diff-notification.success {
-    background-color: #1d3a26;
-    color: #8eda99;
-    border-left: 4px solid #28a745;
-  }
-  
-  #license-diff-display ins {
-    background-color: #1b401b;
-    color: #8eda99;
-    box-shadow: 0 0 0 1px rgba(142, 218, 153, 0.3);
-  }
-  
-  #license-diff-display del {
-    background-color: #471818;
-    color: #f1adb5;
-    box-shadow: 0 0 0 1px rgba(241, 173, 181, 0.3);
-  }
-  
+
+  /* Buttons */
   .copy-spdx-button {
-    color: #aaa;
+    color: #cbd5e1;
   }
-  
   .copy-spdx-button:hover {
-    color: #eee;
-    background-color: rgba(255, 255, 255, 0.1);
+    color: #f8fafc;
+    background-color: rgba(255, 255, 255, 0.08);
   }
-  
   .copy-spdx-button.copied {
-    background-color: rgba(106, 191, 105, 0.2);
-    color: #6abf69;
+    background-color: rgba(34, 197, 94, 0.2);
+    color: #22c55e;
+  }
+
+  /* Notifications (aim for strong text/background contrast) */
+  .license-diff-notification.info {
+    background-color: #0b2a3a;  /* deep cyan */
+    color: #cfeaf5;
+    border-left: 4px solid #38bdf8;
+  }
+  .license-diff-notification.warning {
+    background-color: #2a1f00;  /* deep amber */
+    color: #ffe08a;
+    border-left: 4px solid #fbbf24;
+  }
+  .license-diff-notification.error {
+    background-color: #3a0d12;  /* deep red */
+    color: #fecdd3;
+    border-left: 4px solid #f87171;
+  }
+  .license-diff-notification.success {
+    background-color: #0f2a1a;  /* deep green */
+    color: #d1f7da;
+    border-left: 4px solid #34d399;
+  }
+
+  /* Diff highlights */
+  #license-diff-display {
+    background-color: #1e2127;
+    border: 1px solid #3b3e46;
+  }
+  #license-diff-display ins {
+    background-color: #0f2a1a !important;
+    color: #d1f7da !important;
+    box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.35) !important;;
+  }
+  #license-diff-display del {
+    background-color: #3a0d12 !important;
+    color: #fecdd3 !important;
+    box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.35) !important;;
+  }
+  #license-diff-display::-webkit-scrollbar-thumb {
+    background-color: #4b5563;
+  }
+  #license-diff-display::-webkit-scrollbar-thumb:hover {
+    background-color: #64748b;
+  }
+
+  /* Focus visibility (keyboard a11y) */
+  #license-diff-ui button:focus-visible,
+  #license-diff-dropdown:focus-visible {
+    outline: 3px solid #22c55e;
+    outline-offset: 2px;
+    border-radius: 6px;
   }
 }

@@ -875,7 +875,7 @@ async function cacheLicenseDbVersion(version) {
 async function forceUpdateDatabase() {
   try {
     // Set badge to indicate update in progress
-    chrome.action.setBadgeText({ text: 'Updt' });
+    chrome.action.setBadgeText({ text: 'Updating' });
     chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' }); // Orange
 
     // Send initial progress to options page
@@ -1224,7 +1224,7 @@ async function checkForDatabaseUpdates() {
 
     try {
       // Set badge to indicate update in progress
-      chrome.action.setBadgeText({ text: 'Updt' });
+      chrome.action.setBadgeText({ text: 'Updating' });
       chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' }); // Orange
 
       // Fetch the license index to check for changes
