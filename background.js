@@ -706,7 +706,16 @@ function checkedLicenses() {
 }
 
 // Message listener
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg?.action === 'openExternal' && typeof msg.url === 'string') {
+    chrome.tabs.create({ url: msg.url }).then(() => {
+      sendResponse({ ok: true });
+    }).catch(err => {
+      console.error('openExternal failed:', err);
+      sendResponse({ ok: false, error: String(err) });
+    });
+    return true; // keep the message channel open for async response
+  }
   if (message.action === 'checkLicense') {
     const selectedText = message.text;
     

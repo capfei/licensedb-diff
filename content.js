@@ -155,7 +155,7 @@ if (window.__LICENSE_DIFF_LOADED__) {
       // Populate dropdown
       matches.forEach(m => {
         // Build link with copy button for later display
-        m.link = `<a href="https://scancode-licensedb.aboutcode.org/${m.license}.html" target="_blank">${m.name}</a> 
+        m.link = `<a href="https://scancode-licensedb.aboutcode.org/${m.license}.html" target="_blank" rel="noopener noreferrer">${m.name}</a> 
           <span class=\"spdx-container\">
             <span class=\"spdx-id\">(${m.spdx})</span>
             <button class=\"copy-spdx-button\" data-spdx=\"${m.spdx}\" title=\"Copy ID\">
@@ -175,7 +175,17 @@ if (window.__LICENSE_DIFF_LOADED__) {
         const sel = matches.find(m => m.license === dropdown.value);
         if (!sel) return;
         document.getElementById('license-diff-url').innerHTML = sel.link;
-        document.getElementById('license-diff-display').innerHTML = sel.diff;
+        
+        const a = linkDisplay.querySelector('a');
+        if (a) {
+          a.setAttribute('rel', 'noopener noreferrer');
+          a.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            chrome.runtime.sendMessage({ action: 'openExternal', url: a.href });
+          }, { passive: false });
+        }
+        diffContainer.innerHTML = sel.diff;
         setupCopyButtons();
       };
 
