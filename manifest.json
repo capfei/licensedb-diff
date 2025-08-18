@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LicenseDB Diff",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Compare selected text with ScanCode LicenseDB.",
   "permissions": [
     "activeTab",
@@ -35,3 +35,4 @@
       "128": "images/icon-128.png"
   }
 }
+
