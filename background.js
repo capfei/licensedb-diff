@@ -706,9 +706,9 @@ function checkedLicenses() {
 }
 
 // Message listener
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg?.action === 'openExternal' && typeof msg.url === 'string') {
-    chrome.tabs.create({ url: msg.url }).then(() => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.action === 'openExternal' && typeof message.url === 'string') {
+    chrome.tabs.create({ url: message.url }).then(() => {
       sendResponse({ ok: true });
     }).catch(err => {
       console.error('openExternal failed:', err);

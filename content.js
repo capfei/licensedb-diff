@@ -155,7 +155,7 @@ if (window.__LICENSE_DIFF_LOADED__) {
       // Populate dropdown
       matches.forEach(m => {
         // Build link with copy button for later display
-        m.link = `<a href="https://scancode-licensedb.aboutcode.org/${m.license}.html" target="_blank" rel="noopener noreferrer">${m.name}</a> 
+        m.link = `<a href="https://scancode-licensedb.aboutcode.org/${m.license}.html" target="_blank">${m.name}</a> 
           <span class=\"spdx-container\">
             <span class=\"spdx-id\">(${m.spdx})</span>
             <button class=\"copy-spdx-button\" data-spdx=\"${m.spdx}\" title=\"Copy ID\">
