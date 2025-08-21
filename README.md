@@ -8,8 +8,9 @@ official extension.
 
 ## Installation
 
-The extension is available in the 
-[Chrome Web Store](https://chromewebstore.google.com/detail/licensedb-diff/nlbgoabjahcideocgmnipmeabicnpejf).
+The extension is available for
+[Chrome](https://chromewebstore.google.com/detail/licensedb-diff/nlbgoabjahcideocgmnipmeabicnpejf)
+and [Microsoft Edge](https://microsoftedge.microsoft.com/addons/detail/licensedb-diff/phmkmmgkfediamaidpmmdgnbbglchadl).
 
 ## Using the extension
 
