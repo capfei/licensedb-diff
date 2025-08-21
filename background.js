@@ -137,8 +137,7 @@ async function preloadLicenseDatabase() {
     }
     
     console.log('Starting license database initialization...');
-    chrome.action.setBadgeText({ text: 'Load' });
-    chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' });  // Orange for loading
+    updateBadge("orange");
     
     // First, fetch the license index
     const licenseList = await fetch('https://scancode-licensedb.aboutcode.org/index.json')
@@ -209,15 +208,13 @@ async function preloadLicenseDatabase() {
     await recordUpdateTimestamp();
     
     // Reset badge
-    chrome.action.setBadgeText({ text: 'Diff' });
-    chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });  // Green for success
-    
+    updateBadge("green");
+
     console.log(`License database initialization completed. Processed ${processed} licenses with ${failures} failures.`);
     return true;
   } catch (error) {
     console.error('Error initializing license database:', error);
-    chrome.action.setBadgeText({ text: 'Err' });
-    chrome.action.setBadgeBackgroundColor({ color: '#F44336' });  // Red for error
+    updateBadge("red");
     return false;
   }
 }
@@ -455,8 +452,16 @@ async function fetchLicenses(text, sendProgress) {
 
     // Filter out deprecated licenses
     const licenses = licenseList.filter(obj => !obj.is_deprecated);
-    
-  const { maxResults: MAX_RESULTS, finalThresholdPct: FINAL_THRESHOLD, baseApproxThresholdPct: BASE_APPROX_THRESHOLD, maxDiffCandidates: MAX_DIFF_CANDIDATES, batchSize: batchSize } = CONFIG.scan;
+
+    // Load user-defined limits and thresholds
+    const userSettings = await loadUserSettings();
+    const MAX_RESULTS = Math.max(1, Math.min(100, parseInt(userSettings.maxResults ?? CONFIG.scan.maxResults, 10)));
+    const FINAL_THRESHOLD = Math.max(0, Math.min(100, Number(userSettings.minSimilarityPct ?? CONFIG.scan.finalThresholdPct)));
+
+    // Keep other (internal) scan knobs from CONFIG
+    const BASE_APPROX_THRESHOLD = CONFIG.scan.baseApproxThresholdPct;
+    const MAX_DIFF_CANDIDATES = CONFIG.scan.maxDiffCandidates;
+    const batchSize = CONFIG.scan.batchSize;
 
     // Precompute selected text artifacts
   const selectedNormalized = normalizeLicenseText(text);
@@ -556,7 +561,6 @@ async function fetchLicenses(text, sendProgress) {
         : CONFIG.scan.shortText.diffTimeout);
 
     const refined = [];
-    const lowScore = [];
     const runDiffs = async (candidates) => {
       for (const candidate of candidates) {
         try {
@@ -571,25 +575,32 @@ async function fetchLicenses(text, sendProgress) {
             charSimilarity: charSim.toFixed(2),
             score: charSim.toFixed(2),
             diff: displayDiff,
-            link: `<a href=\"https://scancode-licensedb.aboutcode.org/${candidate.license}.html\" target=\"_blank\">${candidate.name}</a> (${candidate.spdx})`
+            link: `<a href="https://scancode-licensedb.aboutcode.org/${candidate.license}.html" target="_blank">${candidate.name}</a> (${candidate.spdx})`
           };
-          if (charSim >= FINAL_THRESHOLD) refined.push(rec); else lowScore.push(rec);
+          // Only keep matches meeting user-defined minimum
+          if (charSim >= FINAL_THRESHOLD) {
+            refined.push(rec);
+          }
         } catch (e) {
           // ignore failed diff
         }
+        // progress update every 10 items
         diffEvaluated++;
         if (diffEvaluated % 10 === 0) {
           sendProgress({ checked: checkedLicenses, total: totalLicenses, promising: candidates.length, message: `Refining diffs ${diffEvaluated}/${candidates.length}...` });
         }
-        if (refined.length >= MAX_RESULTS) break; // early exit
+        if (refined.length >= MAX_RESULTS) break;
       }
     };
 
     await runDiffs(toRefine);
 
-    // If we still have fewer than desired results and more approx candidates remain, expand once
+    // Expand once if needed
     if (refined.length < MAX_RESULTS && approxCandidates.length > toRefine.length) {
-      const expansion = approxCandidates.slice(toRefine.length, Math.min(approxCandidates.length, dynamicMaxDiff * 2, MAX_DIFF_CANDIDATES));
+      const expansion = approxCandidates.slice(
+        toRefine.length,
+        Math.min(approxCandidates.length, dynamicMaxDiff * 2, MAX_DIFF_CANDIDATES)
+      );
       if (expansion.length) {
         sendProgress({ checked: checkedLicenses, total: totalLicenses, promising: expansion.length, message: `Expanding refinement (+${expansion.length})...` });
         await runDiffs(expansion);
@@ -599,11 +610,8 @@ async function fetchLicenses(text, sendProgress) {
     // Restore previous timeout
     dmp.Diff_Timeout = prevTimeout;
 
+    // Sort and return only the qualifying matches; do not backfill with lower scores
     refined.sort((a, b) => parseFloat(b.charSimilarity) - parseFloat(a.charSimilarity));
-    if (refined.length < MAX_RESULTS && lowScore.length) {
-      lowScore.sort((a, b) => parseFloat(b.charSimilarity) - parseFloat(a.charSimilarity));
-      refined.push(...lowScore.slice(0, MAX_RESULTS - refined.length));
-    }
     return refined.slice(0, MAX_RESULTS);
   } catch (error) {
     console.error("Error in fetchLicenses:", error);
@@ -884,8 +892,7 @@ async function cacheLicenseDbVersion(version) {
 async function forceUpdateDatabase() {
   try {
     // Set badge to indicate update in progress
-    chrome.action.setBadgeText({ text: 'Updating' });
-    chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' }); // Orange
+    updateBadge("orange");
 
     // Send initial progress to options page
     sendProgressUpdate(0, 'Starting database update...');
@@ -995,8 +1002,7 @@ async function forceUpdateDatabase() {
     console.log(`License database update completed. Processed ${processed} licenses with ${failures} failures.`);
 
     // Reset badge
-    chrome.action.setBadgeText({ text: 'Diff' });
-    chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });  // Green
+    updateBadge("green");
 
     return true;
   } catch (error) {
@@ -1005,13 +1011,11 @@ async function forceUpdateDatabase() {
     // Send error progress update
     sendProgressUpdate(0, `Error: ${error.message || 'Unknown error'}`, true);
 
-    // Reset badge
-    chrome.action.setBadgeText({ text: 'Err' });
-    chrome.action.setBadgeBackgroundColor({ color: '#F44336' });  // Red
+    // Error badge and then reset
+    updateBadge("red");
 
     setTimeout(() => {
-      chrome.action.setBadgeText({ text: 'Diff' });
-      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
+      updateBadge("green");
     }, 5000);
     
     throw error;
@@ -1022,8 +1026,7 @@ async function forceUpdateDatabase() {
 async function resetDatabase() {
   try {
     // Set badge to indicate reset in progress
-    chrome.action.setBadgeText({ text: 'Rst' });
-    chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' }); // Orange
+    updateBadge("orange");
     
     // Send initial progress to options page
     sendProgressUpdate(0, 'Deleting database...');
@@ -1051,8 +1054,7 @@ async function resetDatabase() {
     sendProgressUpdate(100, 'Database reset and reinitialized successfully', true);
 
     // Reset badge
-    chrome.action.setBadgeText({ text: 'Diff' });
-    chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });  // Green
+    updateBadge("green");
 
     return true;
   } catch (error) {
@@ -1062,12 +1064,10 @@ async function resetDatabase() {
     sendProgressUpdate(0, `Error: ${error.message || 'Unknown error'}`, true);
 
     // Reset badge
-    chrome.action.setBadgeText({ text: 'Err' });
-    chrome.action.setBadgeBackgroundColor({ color: '#F44336' });  // Red
+    updateBadge("red");
 
     setTimeout(() => {
-      chrome.action.setBadgeText({ text: 'Diff' });
-      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
+      updateBadge("green");
     }, 5000);
 
     throw error;
@@ -1233,8 +1233,7 @@ async function checkForDatabaseUpdates() {
 
     try {
       // Set badge to indicate update in progress
-      chrome.action.setBadgeText({ text: 'Updating' });
-      chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' }); // Orange
+      updateBadge("orange");
 
       // Fetch the license index to check for changes
       const licenseList = await fetch('https://scancode-licensedb.aboutcode.org/index.json', {
@@ -1320,19 +1319,16 @@ async function checkForDatabaseUpdates() {
       console.log(`License database update completed. Processed ${processed} licenses with ${failures} failures.`);
 
       // Reset badge
-      chrome.action.setBadgeText({ text: 'Diff' });
-      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });  // Green
+      updateBadge("green");
       
       return true;
     } catch (error) {
       console.error('Error updating license database:', error);
-      chrome.action.setBadgeText({ text: 'Err' });
-      chrome.action.setBadgeBackgroundColor({ color: '#F44336' });  // Red
+      updateBadge("red");
 
       // Reset badge after a delay
       setTimeout(() => {
-        chrome.action.setBadgeText({ text: 'Diff' });
-        chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
+        updateBadge("green");
       }, 5000);
 
       return false;
@@ -1340,6 +1336,23 @@ async function checkForDatabaseUpdates() {
   } else {
     console.log('License database is up to date');
     return true;
+  }
+}
+
+function updateBadge(color){
+  switch(color) {
+    case "green":
+      chrome.action.setBadgeText({ text: 'Diff' });
+      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
+      break;
+    case "red":
+      chrome.action.setBadgeText({ text: 'Error' });
+      chrome.action.setBadgeBackgroundColor({ color: '#F44336' });
+      break;
+    case "orange":
+      chrome.action.setBadgeText({ text: 'Load' });
+      chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' });
+      break;
   }
 }
 
@@ -1363,3 +1376,18 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     });
   }
 });
+
+// Load user settings (with defaults from CONFIG)
+async function loadUserSettings() {
+  const defaults = {
+    maxResults: CONFIG.scan.maxResults,
+    minSimilarityPct: CONFIG.scan.finalThresholdPct
+  };
+  return new Promise((resolve) => {
+    try {
+      chrome.storage?.sync?.get(defaults, (items) => resolve(items || defaults));
+    } catch {
+      resolve(defaults);
+    }
+  });
+}

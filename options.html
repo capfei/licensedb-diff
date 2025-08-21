@@ -223,6 +223,24 @@
   </div>
 
   <div class="card">
+    <h2>Results Settings</h2>
+    <div style="display:grid; gap:12px; max-width:420px;">
+      <label>
+        Maximum results to show
+        <input id="max-results" type="number" min="1" max="100" step="1" style="width:120px; margin-left:8px;" />
+      </label>
+      <label>
+        Minimum match percentage
+        <input id="min-similarity" type="number" min="0" max="100" step="1" style="width:120px; margin-left:8px;" />
+      </label>
+      <div>
+        <button id="save-settings">Save Settings</button>
+        <span id="save-status" style="margin-left:10px; font-size:12px; color:#666666;"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>Advanced Options</h2>
     <button id="reset-db" class="button-danger">Reset Database</button>
     <p><small>This will completely reset the license database. You will need to wait for it to rebuild.</small></p>

@@ -2,10 +2,80 @@ document.addEventListener('DOMContentLoaded', async function() {
   // Initialize UI
   await loadDatabaseInfo();
 
+  // Load settings UI
+  await loadUserSettingsToForm();
+
   // Set up button event listeners
   document.getElementById('refresh-db').addEventListener('click', refreshDatabase);
   document.getElementById('reset-db').addEventListener('click', resetDatabase);
+  document.getElementById('save-settings').addEventListener('click', saveUserSettingsFromForm);
 });
+
+// Defaults aligned with background CONFIG
+const DEFAULT_SETTINGS = {
+  maxResults: 10,
+  minSimilarityPct: 15
+};
+
+function storageGet(keysWithDefaults) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.sync.get(keysWithDefaults, (items) => resolve(items || keysWithDefaults));
+    } catch {
+      resolve(keysWithDefaults);
+    }
+  });
+}
+
+function storageSet(obj) {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.storage.sync.set(obj, () => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve(true);
+        }
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+async function loadUserSettingsToForm() {
+  const { maxResults, minSimilarityPct } = await storageGet(DEFAULT_SETTINGS);
+  const maxResultsInput = document.getElementById('max-results');
+  const minSimInput = document.getElementById('min-similarity');
+
+  maxResultsInput.value = Number.isFinite(maxResults) ? maxResults : DEFAULT_SETTINGS.maxResults;
+  minSimInput.value = Number.isFinite(minSimilarityPct) ? minSimilarityPct : DEFAULT_SETTINGS.minSimilarityPct;
+}
+
+async function saveUserSettingsFromForm() {
+  const statusEl = document.getElementById('save-status');
+  statusEl.textContent = '';
+
+  let maxResults = parseInt(document.getElementById('max-results').value, 10);
+  let minSimilarityPct = Number(document.getElementById('min-similarity').value);
+
+  // validate
+  if (!Number.isFinite(maxResults)) maxResults = DEFAULT_SETTINGS.maxResults;
+  if (!Number.isFinite(minSimilarityPct)) minSimilarityPct = DEFAULT_SETTINGS.minSimilarityPct;
+
+  maxResults = Math.max(1, Math.min(100, maxResults));
+  minSimilarityPct = Math.max(0, Math.min(100, minSimilarityPct));
+
+  try {
+    await storageSet({ maxResults, minSimilarityPct });
+    statusEl.style.color = '#4CAF50';
+    statusEl.textContent = 'Saved';
+    setTimeout(() => (statusEl.textContent = ''), 1500);
+  } catch (e) {
+    statusEl.style.color = '#dc3545';
+    statusEl.textContent = 'Error saving';
+  }
+}
 
 // Request database information
 async function loadDatabaseInfo() {
