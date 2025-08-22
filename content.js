@@ -9,13 +9,39 @@ if (window.__LICENSE_DIFF_LOADED__) {
   const uiContainer = document.createElement('div');
   uiContainer.id = 'license-diff-ui';
 
+  // Toolbar row above status (theme selector on left, close button on right)
+  const toolbar = document.createElement('div');
+  toolbar.id = 'license-diff-toolbar';
+  uiContainer.appendChild(toolbar);
+
+  // theme helpers
+  async function getUserTheme() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage?.sync?.get({ theme: 'light' }, (items) => {
+          resolve(items?.theme === 'dark' ? 'dark' : 'light');
+        });
+      } catch {
+        resolve('light');
+      }
+    });
+  }
+  function applyThemeClass(theme) {
+    uiContainer.classList.remove('ld-theme-light', 'ld-theme-dark');
+    uiContainer.classList.add(theme === 'dark' ? 'ld-theme-dark' : 'ld-theme-light');
+  }
+  function saveTheme(theme) {
+    try { chrome.storage?.sync?.set({ theme }); } catch { /* ignore */ }
+  }
+
   // Add a close button
   const closeButton = document.createElement('button');
+  closeButton.className = 'license-diff-close';
   closeButton.innerText = '×';
   closeButton.addEventListener('click', () => {
     uiContainer.style.display = 'none';
   });
-  uiContainer.appendChild(closeButton);
+  toolbar.appendChild(closeButton);
 
   // Create notifications container
   const notificationsContainer = document.createElement('div');
@@ -94,13 +120,56 @@ if (window.__LICENSE_DIFF_LOADED__) {
     return notification;
   }
 
+  // Add theme control
+  const themeRow = document.createElement('div');
+  themeRow.id = 'license-diff-theme';
+  const themeLabel = document.createElement('label');
+  themeLabel.textContent = 'Theme';
+  themeLabel.setAttribute('for', 'license-diff-theme-select');
+  const themeSelect = document.createElement('select');
+  themeSelect.id = 'license-diff-theme-select';
+  themeSelect.innerHTML = `
+    <option value="light">Light</option>
+    <option value="dark">Dark</option>
+  `;
+  themeRow.appendChild(themeLabel);
+  themeRow.appendChild(themeSelect);
+  // place to the left of the close button
+  toolbar.insertBefore(themeRow, toolbar.firstChild);
+
+  // Apply theme on init and set the select value
+  getUserTheme().then(theme => {
+    applyThemeClass(theme);
+    themeSelect.value = theme;
+  });
+
+  // Apply and save immediately when user changes it
+  themeSelect.addEventListener('change', () => {
+    const theme = themeSelect.value === 'dark' ? 'dark' : 'light';
+    applyThemeClass(theme);
+    saveTheme(theme);
+  });
+
+  // Also react if theme changes elsewhere (e.g., Options page)
+  try {
+    chrome.storage?.onChanged?.addListener((changes, area) => {
+      if (area === 'sync' && changes.theme) {
+        const theme = changes.theme.newValue === 'dark' ? 'dark' : 'light';
+        applyThemeClass(theme);
+        themeSelect.value = theme;
+      }
+    });
+  } catch { /* ignore */ }
+
   // Listen for messages from the background script
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === 'ping') {
       sendResponse({ ok: true });
-      return; // No async work
+      return;
     }
     if (message.action === 'showUI') {
+      // Re-read in case changed while panel hidden
+      getUserTheme().then(applyThemeClass);
       uiContainer.style.display = 'flex';
       sendResponse({ success: true });
     } else if (message.action === 'clearResults') {

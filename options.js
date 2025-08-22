@@ -4,11 +4,13 @@ document.addEventListener('DOMContentLoaded', async function() {
 
   // Load settings UI
   await loadUserSettingsToForm();
+  await loadThemeToForm();
 
   // Set up button event listeners
   document.getElementById('refresh-db').addEventListener('click', refreshDatabase);
   document.getElementById('reset-db').addEventListener('click', resetDatabase);
   document.getElementById('save-settings').addEventListener('click', saveUserSettingsFromForm);
+  document.getElementById('save-theme')?.addEventListener('click', saveThemeFromForm);
 });
 
 // Defaults aligned with background CONFIG
@@ -16,6 +18,7 @@ const DEFAULT_SETTINGS = {
   maxResults: 10,
   minSimilarityPct: 15
 };
+const DEFAULT_APPEARANCE = { theme: 'light' };
 
 function storageGet(keysWithDefaults) {
   return new Promise((resolve) => {
@@ -74,6 +77,31 @@ async function saveUserSettingsFromForm() {
   } catch (e) {
     statusEl.style.color = '#dc3545';
     statusEl.textContent = 'Error saving';
+  }
+}
+
+async function loadThemeToForm() {
+  const { theme } = await storageGet(DEFAULT_APPEARANCE);
+  const sel = document.getElementById('theme-select');
+  if (sel) sel.value = (theme === 'dark' ? 'dark' : 'light');
+}
+
+async function saveThemeFromForm() {
+  const sel = document.getElementById('theme-select');
+  const statusEl = document.getElementById('theme-save-status');
+  const value = sel?.value === 'dark' ? 'dark' : 'light';
+  try {
+    await storageSet({ theme: value });
+    if (statusEl) {
+      statusEl.style.color = '#4CAF50';
+      statusEl.textContent = 'Saved';
+      setTimeout(() => (statusEl.textContent = ''), 1500);
+    }
+  } catch {
+    if (statusEl) {
+      statusEl.style.color = '#dc3545';
+      statusEl.textContent = 'Error';
+    }
   }
 }
 

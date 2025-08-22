@@ -6,7 +6,7 @@
   right: 20px;
   width: 50%;
   height: auto;
-  max-height: 100%; /* Fallback */
+  max-height: 100%;  /* Fallback */
   max-height: -moz-available;
   max-height: -webkit-fill-available;
   max-height: fill-available;
@@ -16,15 +16,22 @@
   z-index: 2147483647; /* max */
   overflow: hidden;
   flex-direction: column;
-  display: none; /* Hidden by default */
+  display: none;  /* Hidden by default */
+
   transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
 
-/* Change this selector to be specific to the close button */
-#license-diff-ui > button:first-child {
-  position: absolute;
-  top: 10px;
-  right: 10px;
+/* Replace old header rules with a simple toolbar row above the status */
+#license-diff-toolbar {
+  display: flex;
+  align-items: normal;
+  justify-content: space-between;  /* Theme selector left, close button right */
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+/* Close button inside toolbar (no absolute positioning) */
+#license-diff-ui .license-diff-close {
   background: none;
   border: none;
   font-size: 22px;
@@ -37,22 +44,40 @@
   align-items: center;
   justify-content: center;
   opacity: 0.7;
-  z-index: 5;
 }
 
-#license-diff-ui > button:first-child:hover {
+#license-diff-ui .license-diff-close:hover {
   background-color: rgba(0, 0, 0, 0.08);
   opacity: 1;
   transform: scale(1.05);
 }
 
-#license-diff-ui h3 {
-  margin-top: 0;
-  margin-bottom: 16px;
-  font-weight: 600;
-  font-size: 18px;
-  border-bottom: 1px solid #eee;
-  padding-bottom: 10px;
+/* Theme control sized for the toolbar row */
+#license-diff-theme {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+#license-diff-theme label {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+#license-diff-theme select {
+  padding: 4px 22px 4px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  font-size: 12px;
+  height: 28px;
+  background: #fff;
+  color: #333;
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg xmlns='http://www.w3.org/2000/svg' width='292.4' height='292.4'%3E%3Cpath fill='%23666666' d='M287 69.4a17.6 17.6 0 0 0-13-5.4H18.4c-5 0-9.3 1.8-12.9 5.4A17.6 17.6 0 0 0 0 82.2c0 5 1.8 9.3 5.4 12.9l128 127.9c3.6 3.6 7.8 5.4 12.8 5.4s9.2-1.8 12.8-5.4L287 95c3.5-3.5 5.4-7.8 5.4-12.8 0-5-1.9-9.2-5.4-12.8z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 10px auto;
 }
 
 /* Progress bar container */
@@ -67,7 +92,7 @@
 
 #license-diff-progress {
   width: 0%;
-  height: 100%; /* Set to 100% to fill container vertically */
+  height: 100%;  /* Set to 100% to fill container vertically */
   background-color: #4CAF50;
   border-radius: 8px;
   transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
@@ -80,23 +105,28 @@
 
 /* Create a separate class for the animated state */
 #license-diff-progress.animating {
-  background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.15) 25%, transparent 25%, 
-                      transparent 50%, rgba(255, 255, 255, 0.15) 50%, 
-                      rgba(255, 255, 255, 0.15) 75%, transparent 75%, transparent);
+  background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.15) 25%, transparent 25%,
+      transparent 50%, rgba(255, 255, 255, 0.15) 50%,
+      rgba(255, 255, 255, 0.15) 75%, transparent 75%, transparent);
   background-size: 20px 20px;
   animation: progress-bar-stripes 2s linear infinite;
 }
 
 @keyframes progress-bar-stripes {
-  0% { background-position: 0 0; }
-  100% { background-position: 20px 0; }
+  0% {
+    background-position: 0 0;
+  }
+
+  100% {
+    background-position: 20px 0;
+  }
 }
 
 #license-diff-dropdown {
   width: 100% !important;
   max-width: none !important;
   min-width: 0 !important;
-  flex: 0 0 auto !important;       /* defeat global flex rules */
+  flex: 0 0 auto !important;  /* defeat global flex rules */
   align-self: stretch !important;  /* defeat grid/flex auto sizing */
   margin-bottom: 16px;
   padding: 10px 36px 12px 12px !important;  /* extra bottom pad helps on Windows */
@@ -172,7 +202,7 @@
   font-size: 14px;
   line-height: 1.6;
   background-color: rgba(0, 0, 0, 0.02);
-  max-height: -webkit-fill-available; /*calc(60vh - 150px);*/
+  max-height: -webkit-fill-available;  /*calc(60vh - 150px);*/
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
   white-space: normal;
   word-break: break-word;
@@ -202,10 +232,10 @@
 #license-diff-notifications {
   width: 100% !important;
   margin-bottom: 16px;
-  overflow: visible; /* Changed from hidden to allow notifications to be visible */
+  overflow: visible;  /* Changed from hidden to allow notifications to be visible */
   position: sticky;  /* Make notifications stick to the top when scrolling */
   top: 0;
-  z-index: 10;      /* Ensure notifications appear on top of other content */
+  z-index: 10;  /* Ensure notifications appear on top of other content */
 }
 
 /* Individual notification - improved visibility */
@@ -217,7 +247,7 @@
   margin-bottom: 12px;
   border-radius: 8px;
   font-size: 14px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); /* Stronger shadow for better visibility */
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);  /* Stronger shadow for better visibility */
   animation: slideIn 0.3s ease-out;
   transition: all 0.2s ease;
   line-height: 1.5;
@@ -228,6 +258,7 @@
     opacity: 0;
     transform: translateY(-10px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -239,10 +270,11 @@
     opacity: 1;
     transform: translateY(0);
   }
+
   to {
     opacity: 0;
     transform: translateY(-10px);
-}
+  }
 }
 
 /* Styling for diff results */
@@ -275,7 +307,7 @@
   display: inline-flex;
   align-items: center;
   margin-left: 4px;
-  position: relative; /* Added for better positioning context */
+  position: relative;
 }
 
 .spdx-id {
@@ -295,205 +327,209 @@
   opacity: 0.7;
   transition: all 0.2s ease;
   vertical-align: middle;
-  position: static; /* Ensure this button doesn't get positioned absolutely */
+  position: static;  /* Ensure this button doesn't get positioned absolutely */
 }
 
-/* Light/Dark mode support */
-@media (prefers-color-scheme: light) {
-  #license-diff-ui {
-    background-color: #ffffff;
-    color: #333333;
-    border: 1px solid rgba(0, 0, 0, 0.1);
-  }
-  
-  #license-diff-ui button {
-    color: #555;
-  }
-  
-  #license-diff-ui button:hover {
-    background-color: rgba(0, 0, 0, 0.08);
-  }
-  
-  #license-diff-ui h3 {
-    border-bottom-color: #eee;
-  }
-  
-  #license-diff-dropdown {
-    background-color: #ffffff;
-    color: #333333;
-    border-color: #cccccc;
-  }
-
-  #license-diff-url a:hover {
-    color: #2d682d;
-    border-bottom: 1px dotted #2d682d;
-  }
-  
-  .license-diff-notification.info {
-    background-color: #e7f3fe;
-    color: #0c5460;
-    border-left: 4px solid #17a2b8;
-  }
-  
-  .license-diff-notification.warning {
-    background-color: #fff3cd;
-    color: #856404;
-    border-left: 4px solid #ffc107;
-  }
-  
-  .license-diff-notification.error {
-    background-color: #f8d7da;
-    color: #721c24;
-    border-left: 4px solid #dc3545;
-  }
-  
-  .license-diff-notification.success {
-    background-color: #d4edda;
-    color: #155724;
-    border-left: 4px solid #28a745;
-  }
-
-  #license-diff-display {
-    background-color: #fafafa;
-    border: 1px solid #eee;
-  }
-  
-  #license-diff-display ins {
-    background-color: #e6ffe6;
-    color: #0a5b0a;
-  }
-  
-  #license-diff-display del {
-    background-color: #ffe6e6;
-    color: #7a0000;
-    text-decoration: line-through;
-  }
-  
-  .copy-spdx-button {
-    color: #666;
-  }
-  
-  .copy-spdx-button:hover {
-    color: #333;
-  }
-  
-  .copy-spdx-button.copied {
-    color: #4CAF50;
-  }
+/* Theme control row */
+#license-diff-theme {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-bottom: 10px;
 }
 
-/* High-contrast dark mode overrides (place after your existing dark-mode block) */
-@media (prefers-color-scheme: dark) {
-  /* Surfaces and text */
-  #license-diff-ui {
-    background-color: #0d1117 !important;
-    color: #f0f6fc !important;
-    border-color: #3d444d !important;
-  }
-  #license-diff-status {
-    color: #f0f6fc !important;
-  }
+#license-diff-theme label {
+  font-size: 12px;
+  color: inherit;
+  opacity: 0.8;
+}
 
-  #license-diff-ui button {
-    color: #9198a1 !important;
-  }
-  
-  #license-diff-ui button:hover {
-    color: #9198a1 !important;
-    background-color: #262c36 !important;
-  }
+#license-diff-theme select {
+  padding: 6px 28px 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  font-size: 12px;
+  min-height: 30px !important;
+  background: #fff;
+  color: #333;
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg xmlns='http://www.w3.org/2000/svg' width='292.4' height='292.4'%3E%3Cpath fill='%23666666' d='M287 69.4a17.6 17.6 0 0 0-13-5.4H18.4c-5 0-9.3 1.8-12.9 5.4A17.6 17.6 0 0 0 0 82.2c0 5 1.8 9.3 5.4 12.9l128 127.9c3.6 3.6 7.8 5.4 12.8 5.4s9.2-1.8 12.8-5.4L287 95c3.5-3.5 5.4-7.8 5.4-12.8 0-5-1.9-9.2-5.4-12.8z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px auto;
+}
 
-  #license-diff-url a {
-    color: #4493f8 !important;
-    text-decoration: none !important;
-    font-weight: 500 !important;
-    transition: all 0.2s ease !important;
-    border-bottom: 1px dotted transparent !important;
-  }
+/* Light */
+#license-diff-ui.ld-theme-light {
+  background-color: #ffffff !important;
+  color: #333333 !important;
+  border: 1px solid rgba(0, 0, 0, 0.1) !important;
+}
 
-  #license-diff-url a:hover {
-    border-bottom: 1px solid #4493f8 !important;
-  }
+#license-diff-ui.ld-theme-light button {
+  background-color: #ffffff !important;
+  color: #333333 !important;
+  border: 1px solid rgba(0, 0, 0, 0.1) !important;
+}
 
-  /* Progress */
-  #license-diff-progress-container {
-    background-color: #212830 !important;
-  }
-  #license-diff-progress {
-    background-color: #238636 !important;  /* brighter green for visibility */
-  }
+#license-diff-ui.ld-theme-light #license-diff-status {
+  color: #333333 !important;
+}
 
-  /* Dropdown */
-  #license-diff-dropdown {
-    background-color: #212830 !important;
-    color: #f0f6fc !important;
-    -webkit-text-fill-color: #f0f6fc !important;
-    border: 1px solid #3b3e46 !important;
-    background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23f1f5f9%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.4-12.8z%22%2F%3E%3C%2Fsvg%3E") !important;
-  }
+#license-diff-ui.ld-theme-light #license-diff-dropdown,
+#license-diff-ui.ld-theme-light #license-diff-theme select {
+  background-color: #ffffff !important;
+  color: #333333 !important;
+  -webkit-text-fill-color: #333333 !important;
+  border-color: #cccccc !important;
+}
 
-  #license-diff-dropdown option {
-    font-size: 14px !important;
-    line-height: 1.4 !important;
-    background-color: #0d1117 !important;
-    color: #f0f6fc !important;
-    -webkit-text-fill-color: #f0f6fc !important;
-  }
+#license-diff-ui.ld-theme-light #license-diff-url a {
+  color: #439843 !important;
+}
 
-  /* Buttons */
-  .copy-spdx-button {
-    color: #9198a1 !important;
-  }
-  .copy-spdx-button:hover {
-    color: #9198a1 !important;
-    background-color: #262c36 !important;
-  }
-  .copy-spdx-button.copied {
-    background-color: #0d419d !important;
-  }
+#license-diff-ui.ld-theme-light #license-diff-url a:hover {
+  color: #2d682d !important;
+  border-bottom: 1px dotted #2d682d !important;
+}
 
-  /* Notifications (aim for strong text/background contrast) */
-  .license-diff-notification.info {
-    background-color: #0b2a3a !important;  /* deep cyan */
-    color: #cfeaf5 !important;
-    border-left: 4px solid #38bdf8 !important;
-  }
-  .license-diff-notification.warning {
-    background-color: #2a1f00 !important;  /* deep amber */
-    color: #ffe08a !important;
-    border-left: 4px solid #fbbf24 !important;
-  }
-  .license-diff-notification.error {
-    background-color: #da3633 !important;
-    color: #ffffff;
-    border-left: 4px solid #f87171 !important;
-  }
-  .license-diff-notification.success {
-    background-color: #238636 !important;  /* deep green */
-    color: #3fb950 !important;
-    border-left: 4px solid #34d399 !important;
-  }
+#license-diff-ui.ld-theme-light .license-diff-notification.info {
+  background-color: #e7f3fe !important;
+  color: #0c5460 !important;
+  border-left: 4px solid #17a2b8 !important;
+}
 
-  /* Diff highlights */
-  #license-diff-display {
-    background-color: #212830 !important;
-    border: 1px solid #3b3e46 !important;
-  }
-  #license-diff-display ins {
-    background-color: #033a16 !important;
-    color: #aff5b4 !important;
-    box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.35) !important;
-  }
-  #license-diff-display del {
-    background-color: #67060c !important;
-    color: #ffdcd7 !important;
-    box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.35) !important;
-    text-decoration: line-through !important;
-  }
-  #license-diff-display::-webkit-scrollbar-thumb {
-    background-color: #4b5563;
-  }
-  #license-diff-display::-webkit-scrollbar-thumb:hover {
-    background-color: #64748b;
-  }
+#license-diff-ui.ld-theme-light .license-diff-notification.warning {
+  background-color: #fff3cd !important;
+  color: #856404 !important;
+  border-left: 4px solid #ffc107 !important;
+}
+
+#license-diff-ui.ld-theme-light .license-diff-notification.error {
+  background-color: #f8d7da !important;
+  color: #721c24 !important;
+  border-left: 4px solid #dc3545 !important;
+}
+
+#license-diff-ui.ld-theme-light .license-diff-notification.success {
+  background-color: #d4edda !important;
+  color: #155724 !important;
+  border-left: 4px solid #28a745 !important;
+}
+
+#license-diff-ui.ld-theme-light #license-diff-progress-container {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+#license-diff-ui.ld-theme-light #license-diff-progress {
+  background-color: #4CAF50 !important;
+}
+
+#license-diff-ui.ld-theme-light #license-diff-display {
+  background-color: #fafafa !important;
+  border: 1px solid #eee !important;
+}
+
+#license-diff-ui.ld-theme-light #license-diff-display ins {
+  background-color: #e6ffe6 !important;
+  color: #0a5b0a !important;
+  box-shadow: 0 0 0 1px rgba(76, 175, 80, 0.2) !important;
+}
+
+#license-diff-ui.ld-theme-light #license-diff-display del {
+  background-color: #ffe6e6 !important;
+  color: #7a0000 !important;
+  box-shadow: 0 0 0 1px rgba(244, 67, 54, 0.2) !important;
+}
+
+/* Dark */
+#license-diff-ui.ld-theme-dark {
+  background-color: #0d1117 !important;
+  color: #f0f6fc !important;
+  border: 1px solid #3d444d !important;
+}
+
+#license-diff-ui.ld-theme-dark button {
+  background-color: #0d1117 !important;
+  color: #f0f6fc !important;
+  border: 1px solid #3d444d !important;
+}
+
+#license-diff-ui.ld-theme-dark #license-diff-status {
+  color: #f0f6fc !important;
+}
+
+#license-diff-ui.ld-theme-dark #license-diff-dropdown,
+#license-diff-ui.ld-theme-dark #license-diff-theme select {
+  background-color: #212830 !important;
+  color: #f0f6fc !important;
+  -webkit-text-fill-color: #f0f6fc !important;
+  border: 1px solid #3b3e46 !important;
+}
+
+#license-diff-ui.ld-theme-dark #license-diff-url a {
+  color: #4493f8 !important;
+  border-bottom: 1px dotted transparent !important;
+}
+
+#license-diff-ui.ld-theme-dark #license-diff-url a:hover {
+  border-bottom: 1px solid #4493f8 !important;
+}
+
+#license-diff-ui.ld-theme-dark #license-diff-progress-container {
+  background-color: #212830 !important;
+}
+
+#license-diff-ui.ld-theme-dark #license-diff-progress {
+  background-color: #238636 !important;
+}
+
+#license-diff-ui.ld-theme-dark .license-diff-notification.info {
+  background-color: #0b2a3a !important;
+  color: #cfeaf5 !important;
+  border-left: 4px solid #38bdf8 !important;
+}
+
+#license-diff-ui.ld-theme-dark .license-diff-notification.warning {
+  background-color: #2a1f00 !important;
+  color: #ffe08a !important;
+  border-left: 4px solid #fbbf24 !important;
+}
+
+#license-diff-ui.ld-theme-dark .license-diff-notification.error {
+  background-color: #da3633 !important;
+  color: #ffffff !important;
+  border-left: 4px solid #f87171 !important;
+}
+
+#license-diff-ui.ld-theme-dark .license-diff-notification.success {
+  background-color: #238636 !important;
+  color: #3fb950 !important;
+  border-left: 4px solid #34d399 !important;
+}
+
+#license-diff-ui.ld-theme-dark #license-diff-display {
+  background-color: #212830 !important;
+  border: 1px solid #3b3e46 !important;
+}
+
+#license-diff-ui.ld-theme-dark #license-diff-display ins {
+  background-color: #033a16 !important;
+  color: #aff5b4 !important;
+  box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.35) !important;
+}
+
+#license-diff-ui.ld-theme-dark #license-diff-display del {
+  background-color: #67060c !important;
+  color: #ffdcd7 !important;
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.35) !important;
+}
+
+#license-diff-ui.ld-theme-dark #license-diff-display::-webkit-scrollbar-thumb {
+  background-color: #4b5563 !important;
+}
+
+#license-diff-ui.ld-theme-dark #license-diff-display::-webkit-scrollbar-thumb:hover {
+  background-color: #64748b !important;
 }
