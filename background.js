@@ -14,14 +14,14 @@ const CONFIG = {
     baseApproxThresholdPct: 10,
     maxDiffCandidates: 120,
     batchSize: 60,
-    longText:   { length: 5000, diffTimeout: 0.05, approxAdd: 0,  maxDiff: 30 },
-    mediumText: { length: 2000, diffTimeout: 0.10, approxAdd: 2,  maxDiff: 50 },
-    shortText:  { diffTimeout: 0.15, approxAdd: 0,  maxDiff: 80 }
+    longText: { length: 5000, diffTimeout: 0.05, approxAdd: 0, maxDiff: 30 },
+    mediumText: { length: 2000, diffTimeout: 0.10, approxAdd: 2, maxDiff: 50 },
+    shortText: { diffTimeout: 0.15, approxAdd: 0, maxDiff: 80 }
   },
   quickFilter: {
-    minLengthRatio: 0.5,
-    maxLengthRatio: 2.0,
-    overlapFraction: 0.20
+    minLengthRatio: 0.4,
+    maxLengthRatio: 3.5,
+    overlapFraction: 0.15
   },
   cache: {
     updateIntervalMs: 14 * 24 * 60 * 60 * 1000
@@ -135,33 +135,33 @@ async function preloadLicenseDatabase() {
       console.log('License database already initialized');
       return true;
     }
-    
+
     console.log('Starting license database initialization...');
     updateBadge("orange");
-    
+
     // First, fetch the license index
     const licenseList = await fetch('https://scancode-licensedb.aboutcode.org/index.json')
       .then(response => response.json());
-      
+
     // Filter out deprecated licenses
     const licenses = licenseList.filter(obj => !obj.is_deprecated);
     console.log(`Found ${licenses.length} non-deprecated licenses`);
-    
+
     // Store the index
     const db = await openDatabase();
     const metadataStore = db.transaction(['metadata'], 'readwrite')
       .objectStore('metadata');
-  await promisifyRequest(metadataStore.put({ id: 'index', data: licenses }));
-    
+    await promisifyRequest(metadataStore.put({ id: 'index', data: licenses }));
+
     // Process licenses in batches
     const batchSize = 50;
     const totalLicenses = licenses.length;
     let processed = 0;
     let failures = 0;
-    
+
     for (let i = 0; i < totalLicenses; i += batchSize) {
       const batch = licenses.slice(i, Math.min(i + batchSize, totalLicenses));
-      
+
       // Process this batch
       await Promise.all(batch.map(async (license) => {
         try {
@@ -172,12 +172,12 @@ async function preloadLicenseDatabase() {
           if (licenseData && licenseData.text) {
             licenseData.text = normalizeLicenseText(licenseData.text);
           }
-          
+
           // Store in licenses store
           const licenseStore = db.transaction(['licenses'], 'readwrite')
             .objectStore('licenses');
           await promisifyRequest(licenseStore.put({ license_key: license.license_key, data: licenseData }));
-          
+
           // Pre-calculate and store the license text vector
           if (licenseData.text) {
             const vector = createTextVector(licenseData.text);
@@ -190,23 +190,23 @@ async function preloadLicenseDatabase() {
           console.error(`Error processing license ${license.license_key}:`, error);
         }
       }));
-      
+
       // Update progress
       processed += batch.length;
       const percentComplete = Math.round((processed / totalLicenses) * 100);
-      
+
       // Update badge to show progress
       chrome.action.setBadgeText({ text: `${percentComplete}%` });
-      
+
       console.log(`License initialization progress: ${processed}/${totalLicenses} (${percentComplete}%)`);
     }
-    
+
     // Mark database as initialized
     await markDatabaseInitialized();
-    
+
     // Record the update timestamp when initializing
     await recordUpdateTimestamp();
-    
+
     // Reset badge
     updateBadge("green");
 
@@ -219,7 +219,7 @@ async function preloadLicenseDatabase() {
   }
 }
 
-// Function to fetch data with IndexedDB caching
+// Correct cache write in fetchWithCache
 async function fetchWithCache(url, cacheKey, storeName) {
   const db = await openDatabase();
   const transaction = db.transaction([storeName], 'readonly');
@@ -228,12 +228,15 @@ async function fetchWithCache(url, cacheKey, storeName) {
     const cached = await promisifyRequest(store.get(cacheKey));
     if (cached) return cached.data;
   } catch {/* ignore */}
+
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.statusText}`);
+
   const contentType = response.headers.get('content-type');
   if (!contentType || !contentType.includes('application/json')) {
     console.warn(`Warning: ${url} returned non-JSON content type: ${contentType}`);
   }
+
   const text = await response.text();
   let data;
   try {
@@ -243,18 +246,35 @@ async function fetchWithCache(url, cacheKey, storeName) {
     data = { text };
   }
   if (data && data.text) data.text = normalizeLicenseText(data.text);
+
   try {
     const writeTx = db.transaction([storeName], 'readwrite');
     const writeStore = writeTx.objectStore(storeName);
-    await promisifyRequest(writeStore.put({ key: cacheKey, data }));
-  } catch {/* non-fatal */}
+    // Use correct key field based on store keyPath
+    let record;
+    if (storeName === 'licenses') {
+      record = { license_key: cacheKey, data };
+    } else if (storeName === 'metadata') {
+      record = { id: cacheKey, data };
+    } else if (storeName === 'vectors') {
+      record = { license_key: cacheKey, data };
+    } else if (storeName === 'status') {
+      record = { id: cacheKey, data };
+    } else {
+      // fallback generic
+      record = { key: cacheKey, data };
+    }
+    await promisifyRequest(writeStore.put(record));
+  } catch {
+    /* non-fatal */
+  }
   return data;
 }
 
 // Function to show a notification in the tab
 function showNotification(tabId, message, type = 'info') {
-  return sendMessageToTab(tabId, { 
-    action: 'showNotification', 
+  return sendMessageToTab(tabId, {
+    action: 'showNotification',
     notification: {
       message,
       type // 'info', 'warning', 'error', 'success'
@@ -272,7 +292,7 @@ function sendMessageToTab(tabId, message) {
           if (msg.includes('Could not establish connection. Receiving end does not exist')) {
             console.warn('Content script not found in tab ' + tabId + ', attempting dynamic injection...');
             Promise.all([
-              chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] }).catch(()=>{}),
+              chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] }).catch(() => { }),
               chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] })
             ]).then(() => {
               chrome.tabs.sendMessage(tabId, message, (secondResp) => {
@@ -305,12 +325,12 @@ function sendMessageToTab(tabId, message) {
 // Ensure content script is present in tab before messaging heavy workflow
 async function ensureContentScript(tabId) {
   try {
-  await sendMessageToTab(tabId, { action: 'ping' }); // cheap test
-  return true; // already there
+    await sendMessageToTab(tabId, { action: 'ping' }); // cheap test
+    return true; // already there
   } catch (e) {
     // Attempt injection
     try {
-      await chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] }).catch(()=>{});
+      await chrome.scripting.insertCSS({ target: { tabId }, files: ['content.css'] }).catch(() => { });
       await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
       // Small delay to allow script init
       await new Promise(r => setTimeout(r, 50));
@@ -326,13 +346,13 @@ async function ensureContentScript(tabId) {
 function createTextVector(text) {
   // Normalize text: lowercase, remove punctuation, split into words
   const words = text.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(word => word.length > 0);
-  
+
   // Create term frequency map
   const vector = {};
   for (const word of words) {
     vector[word] = (vector[word] || 0) + 1;
   }
-  
+
   return vector;
 }
 
@@ -343,6 +363,35 @@ function normalizeLicenseText(text) {
     .replace(/\u00a0/g, ' ')        // replace non-breaking spaces
     .replace(/[ \t]{2,}/g, ' ')     // collapse multiple spaces/tabs
     .trim();                        // trim ends
+}
+
+function canonicalizeForDiff(text) {
+  if (!text) return '';
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/[“”«»„]/g, '"')
+    .replace(/[‘’‚‛]/g, "'")
+    .replace(/[\u2013\u2014]/g, '-')          // en/em dash -> hyphen
+    .replace(/\u00a0/g, ' ')                  // non-breaking space
+    .replace(/[ \t]+/g, ' ')                  // collapse spaces/tabs
+    .replace(/\n{2,}/g, '\n')                 // collapse blank lines
+    .trim()
+    .toLowerCase();
+}
+
+function computeDiffSimilarities(diff, lenA, lenB) {
+  let same = 0;
+  for (const tuple of diff) {
+    if (tuple[0] === 0 && tuple[1]) same += tuple[1].length;
+  }
+  const avgDenom = (lenA + lenB) / 2 || 1;
+  const containmentDenom = Math.min(lenA, lenB) || 1;
+  const unionDenom = (lenA + lenB - same) || 1;
+  return {
+    avgPct: (same / avgDenom) * 100,
+    containmentPct: (same / containmentDenom) * 100,
+    jaccardPct: (same / unionDenom) * 100
+  };
 }
 
 // Compute character similarity using existing diff (sum of equal segment lengths / average length)
@@ -420,6 +469,98 @@ async function loadAllVectors() {
   return licenseVectorsCache;
 }
 
+// === Added caches for advanced similarity metrics ===
+let docFreqCache = null;          // { term: documentFrequency }
+let totalDocsCache = 0;
+const licenseShingleCache = {};   // { license_key: Set<string> }
+
+// Build document frequency map from all license vectors (presence-based)
+async function buildDocFreq() {
+  if (docFreqCache) return docFreqCache;
+  await loadAllVectors();
+  docFreqCache = {};
+  const seen = licenseVectorsCache || {};
+  totalDocsCache = 0;
+  for (const lic in seen) {
+    const vec = seen[lic];
+    if (!vec) continue;
+    totalDocsCache++;
+    for (const term in vec) {
+      docFreqCache[term] = (docFreqCache[term] || 0) + 1;
+    }
+  }
+  return docFreqCache;
+}
+
+function buildTfidfVector(termFreq, docFreq, totalDocs) {
+  const vec = {};
+  for (const term in termFreq) {
+    const tf = termFreq[term];
+    const df = docFreq[term] || 1;
+    // log(1 + N/df) to keep values in a modest range
+    const idf = Math.log(1 + totalDocs / df);
+    vec[term] = tf * idf;
+  }
+  return vec;
+}
+
+function cosine(a, b) {
+  let dot = 0, na = 0, nb = 0;
+  for (const t in a) {
+    const av = a[t];
+    na += av * av;
+    if (b[t]) dot += av * b[t];
+  }
+  for (const t in b) {
+    const bv = b[t];
+    nb += bv * bv;
+  }
+  if (!na || !nb) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+// Overlap coefficient (containment): |A ∩ B| / min(|A|, |B|)
+function overlapCoefficient(aKeysArr, bKeysArr) {
+  if (!aKeysArr.length || !bKeysArr.length) return 0;
+  const small = aKeysArr.length < bKeysArr.length ? aKeysArr : bKeysArr;
+  const largeSet = new Set(aKeysArr.length < bKeysArr.length ? bKeysArr : aKeysArr);
+  let inter = 0;
+  for (const k of small) if (largeSet.has(k)) inter++;
+  return inter / small.length;
+}
+
+// 5-word shingles (can tweak k via arg)
+function buildShingles(words, k = 5) {
+  const out = new Set();
+  if (words.length < k) return out;
+  for (let i = 0; i <= words.length - k; i++) {
+    out.add(words.slice(i, i + k).join(' '));
+  }
+  return out;
+}
+
+function jaccard(setA, setB) {
+  if (!setA.size || !setB.size) return 0;
+  let inter = 0;
+  for (const v of setA) if (setB.has(v)) inter++;
+  return inter / (setA.size + setB.size - inter || 1);
+}
+
+// Load user settings (with defaults from CONFIG)
+async function loadUserSettings() {
+  const defaults = {
+    maxResults: CONFIG.scan.maxResults,
+    minSimilarityPct: CONFIG.scan.finalThresholdPct
+  };
+  return new Promise((resolve) => {
+    try {
+      chrome.storage?.sync?.get(defaults, (items) => resolve(items || defaults));
+    } catch {
+      resolve(defaults);
+    }
+  });
+}
+
 /**
  * Main similarity pipeline: approximate prefilter then diff refinement.
  * Ensures up to CONFIG.scan.maxResults returned; fills remaining with lower scores if needed.
@@ -428,194 +569,401 @@ async function loadAllVectors() {
  * @returns {Promise<Array<{license:string,name:string,spdx:string,charSimilarity:string,score:string,diff:string,link:string}>>}
  */
 async function fetchLicenses(text, sendProgress) {
-  // Check if database is initialized
-  const isInitialized = await isDatabaseInitialized();
-  if (!isInitialized) {
-    // If not initialized, do it now
-    sendProgress({ 
-      checked: 0, 
-      total: 1, 
-      promising: 0,
-      message: 'Initializing license database...' 
-    });
-    
+  const originalSelected = text;
+  // Ensure database initialized
+  if (!(await isDatabaseInitialized())) {
+    sendProgress({ checked: 0, total: 1, promising: 0, message: 'Initializing license database...' });
     await preloadLicenseDatabase();
   }
-  
+
   try {
-    // Fetch the index.json file with caching
+    // Load metadata index (cached)
     const licenseList = await fetchWithCache(
       'https://scancode-licensedb.aboutcode.org/index.json',
       'index',
       'metadata'
     );
+    const licenses = licenseList.filter(l => !l.is_deprecated);
 
-    // Filter out deprecated licenses
-    const licenses = licenseList.filter(obj => !obj.is_deprecated);
-
-    // Load user-defined limits and thresholds
+    // User settings
     const userSettings = await loadUserSettings();
     const MAX_RESULTS = Math.max(1, Math.min(100, parseInt(userSettings.maxResults ?? CONFIG.scan.maxResults, 10)));
     const FINAL_THRESHOLD = Math.max(0, Math.min(100, Number(userSettings.minSimilarityPct ?? CONFIG.scan.finalThresholdPct)));
 
-    // Keep other (internal) scan knobs from CONFIG
+    // Internal knobs
     const BASE_APPROX_THRESHOLD = CONFIG.scan.baseApproxThresholdPct;
     const MAX_DIFF_CANDIDATES = CONFIG.scan.maxDiffCandidates;
     const batchSize = CONFIG.scan.batchSize;
 
-    // Precompute selected text artifacts
-  const selectedNormalized = normalizeLicenseText(text);
-  const selectedLength = selectedNormalized.length;
-  // Dynamic tuning based on selection length (longer text -> fewer diffs, higher approx threshold, tighter timeout)
-  // Relax threshold for very long texts so we gather enough candidates
-  let approxThreshold;
-  let dynamicMaxDiff;
-  if (selectedLength > CONFIG.scan.longText.length) {
-    approxThreshold = BASE_APPROX_THRESHOLD + CONFIG.scan.longText.approxAdd;
-    dynamicMaxDiff = CONFIG.scan.longText.maxDiff;
-  } else if (selectedLength > CONFIG.scan.mediumText.length) {
-    approxThreshold = BASE_APPROX_THRESHOLD + CONFIG.scan.mediumText.approxAdd;
-    dynamicMaxDiff = CONFIG.scan.mediumText.maxDiff;
-  } else {
-    approxThreshold = BASE_APPROX_THRESHOLD + CONFIG.scan.shortText.approxAdd;
-    dynamicMaxDiff = CONFIG.scan.shortText.maxDiff;
-  }
-  dynamicMaxDiff = Math.min(dynamicMaxDiff, MAX_DIFF_CANDIDATES);
-    const textVector = createTextVector(selectedNormalized);
-  const wordLenCache = {}; // cache word lengths *once*
-    for (const w in textVector) { wordLenCache[w] = w.length; }
+    // Normalize selection
+    const selectedNormalized = normalizeLicenseText(text);
+    const selectedLength = selectedNormalized.length;
+    const canonSelected = canonicalizeForDiff(selectedNormalized);
 
+    // Selection fingerprint (debug)
+    (function fingerprint() {
+      try {
+        let h = 2166136261 >>> 0;
+        for (let i = 0; i < canonSelected.length; i++) {
+          h ^= canonSelected.charCodeAt(i);
+          h = (h * 16777619) >>> 0;
+        }
+        console.log('[LicenseMatch][SelFingerprint]', {
+          selLen: selectedNormalized.length,
+            canonLen: canonSelected.length,
+            hash: 'fnv32-' + h.toString(16)
+        });
+      } catch (_) { /* ignore */ }
+    })();
+
+    // Dynamic thresholds
+    let approxThreshold;
+    let dynamicMaxDiff;
+    if (selectedLength > CONFIG.scan.longText.length) {
+      approxThreshold = BASE_APPROX_THRESHOLD + CONFIG.scan.longText.approxAdd;
+      dynamicMaxDiff = CONFIG.scan.longText.maxDiff;
+    } else if (selectedLength > CONFIG.scan.mediumText.length) {
+      approxThreshold = BASE_APPROX_THRESHOLD + CONFIG.scan.mediumText.approxAdd;
+      dynamicMaxDiff = CONFIG.scan.mediumText.maxDiff;
+    } else {
+      approxThreshold = BASE_APPROX_THRESHOLD + CONFIG.scan.shortText.approxAdd;
+      dynamicMaxDiff = CONFIG.scan.shortText.maxDiff;
+    }
+    dynamicMaxDiff = Math.min(dynamicMaxDiff, MAX_DIFF_CANDIDATES);
+
+    // Selection vector + caches
+    const textVector = createTextVector(selectedNormalized);
+    const selWords = Object.keys(textVector);
+
+    await loadAllVectors();
+    await buildDocFreq().catch(() => {});
+
+    const selTfidf = docFreqCache ? buildTfidfVector(textVector, docFreqCache, totalDocsCache || 1) : null;
+    const selShingles = buildShingles(selWords, 5);
+
+    const wordLenCache = {};
+    for (const w in textVector) wordLenCache[w] = w.length;
+
+    // Progress counters
     const totalLicenses = licenses.length;
     let checkedLicenses = 0;
-    let approxPromising = 0; // passes quick + approx filter
-    let diffEvaluated = 0;   // how many we actually diff
+    let approxPromising = 0;
+    sendProgress({ checked: 0, total: totalLicenses, promising: 0, message: 'Scanning (approx phase)...' });
 
-    sendProgress({ checked: checkedLicenses, total: totalLicenses, promising: approxPromising, message: 'Scanning (approx phase)...' });
-
-  await loadAllVectors(); // ensure cache initialized
     const approxCandidates = [];
+    let quickPass = 0, quickFail = 0, approxBelow = 0;
+    const startApprox = performance.now();
 
-    // PHASE 1: approximate similarity (no diff)
+    // approximate pass
     for (let i = 0; i < licenses.length; i += batchSize) {
       const batch = licenses.slice(i, i + batchSize);
-      const batchResults = await Promise.all(batch.map(async (license) => {
+      const batchResults = await Promise.all(batch.map(async (lic) => {
         try {
-          const licenseUrl = `https://scancode-licensedb.aboutcode.org/${license.json}`;
-          let licenseData;
-          try {
-            licenseData = await fetchWithCache(licenseUrl, license.license_key, 'licenses');
-          } catch (fetchError) {
-            // Skip quietly
+          const licData = await fetchWithCache(
+            `https://scancode-licensedb.aboutcode.org/${lic.json}`,
+            lic.license_key,
+            'licenses'
+          ).catch(() => null);
+          if (!licData || !licData.text) return null;
+
+          const licenseTextNorm = normalizeLicenseText(licData.text);
+          let licenseVector = licenseVectorsCache[lic.license_key];
+          if (!licenseVector) {
+            licenseVector = createTextVector(licenseTextNorm);
+            licenseVectorsCache[lic.license_key] = licenseVector;
+          }
+
+            // Quick structural filter
+          if (!quickSimilarityCheck(textVector, licenseVector)) {
+            quickFail++;
             return null;
           }
-          const licenseText = licenseData.text;
-          if (!licenseText) return null;
-          const normalizedText = normalizeLicenseText(licenseText);
-          let licenseVector = licenseVectorsCache[license.license_key];
-          if (!licenseVector) {
-            // Generate, store in both caches (memory + IndexedDB) for future speed
-            licenseVector = createTextVector(normalizedText);
-            licenseVectorsCache[license.license_key] = licenseVector;
-            // Persist asynchronously (fire and forget)
-            (async () => {
-              try {
-                const db = await openDatabase();
-                const tx = db.transaction(['vectors'], 'readwrite');
-                tx.objectStore('vectors').put({ license_key: license.license_key, data: licenseVector });
-              } catch (e) {}
-            })();
+          quickPass++;
+
+          // Approx char similarity (%)
+          const approxPct = approximateCharSimilarity(
+            textVector, licenseVector, wordLenCache,
+            selectedLength, licenseTextNorm.length
+          ) * 100;
+
+          // Hybrid light metrics
+          const licWords = Object.keys(licenseVector);
+          const overlapCoeffVal = overlapCoefficient(selWords, licWords);
+          let cosineVal = 0;
+          if (selTfidf) {
+            const licTfidf = buildTfidfVector(licenseVector, docFreqCache, totalDocsCache || 1);
+            cosineVal = cosine(selTfidf, licTfidf);
           }
-          // Quick structural filter
-          if (!quickSimilarityCheck(textVector, licenseVector)) return null;
-          const approx = approximateCharSimilarity(textVector, licenseVector, wordLenCache, selectedLength, normalizedText.length) * 100;
-          if (approx < approxThreshold) return null;
-          approxPromising++;
+          let shingleJac = 0;
+          if (selShingles.size) {
+            let licShingles = licenseShingleCache[lic.license_key];
+            if (!licShingles) {
+              licShingles = buildShingles(licWords, 5);
+              licenseShingleCache[lic.license_key] = licShingles;
+            }
+            if (licShingles.size) shingleJac = jaccard(selShingles, licShingles);
+          }
+
+          const combined = (
+            0.45 * (approxPct / 100) +
+            0.30 * overlapCoeffVal +
+            0.15 * cosineVal +
+            0.10 * shingleJac
+          ) * 100;
+
+          const pass =
+            approxPct >= approxThreshold ||
+            combined >= (approxThreshold - 2) ||
+            overlapCoeffVal >= 0.45 ||
+            cosineVal >= 0.25;
+
+          if (!pass) {
+            approxBelow++;
+            return null;
+          }
+
           return {
-            license: license.license_key,
-            name: licenseData.name,
-            spdx: license.spdx_license_key,
-            approxSimilarity: approx,
-            licenseText: normalizedText
+            license: lic.license_key,
+            name: licData.name,
+            spdx: lic.spdx_license_key,
+            approxSimilarity: combined,
+            rawApprox: approxPct,
+            overlapCoeff: overlapCoeffVal,
+            cosine: cosineVal,
+            shingleJac,
+            licenseText: licenseTextNorm
           };
-        } catch (e) {
+        } catch {
           return null;
         }
       }));
-      const valid = batchResults.filter(Boolean);
-      approxCandidates.push(...valid);
+
+      for (const r of batchResults) if (r) approxCandidates.push(r);
       checkedLicenses += batch.length;
-      sendProgress({ checked: checkedLicenses, total: totalLicenses, promising: approxPromising, message: 'Scanning (approx phase)...' });
+      approxPromising = approxCandidates.length;
+      sendProgress({
+        checked: checkedLicenses,
+        total: totalLicenses,
+        promising: approxPromising,
+        message: 'Scanning (approx phase)...'
+      });
     }
 
-    // Sort by approximate similarity descending and keep top slice for expensive diff
-    approxCandidates.sort((a, b) => b.approxSimilarity - a.approxSimilarity);
-  let toRefine = approxCandidates.slice(0, dynamicMaxDiff);
-  sendProgress({ checked: checkedLicenses, total: totalLicenses, promising: toRefine.length, message: `Refining (diff phase: ${toRefine.length} candidates)...` });
+    console.log(
+      `[LicenseMatch][Approx] licenses=${totalLicenses} quickPass=${quickPass} quickFail=${quickFail} kept=${approxCandidates.length} ` +
+      `approxBelow=${approxBelow} threshold=${approxThreshold} timeMs=${(performance.now() - startApprox).toFixed(1)}`
+    );
 
-  // Dynamic diff timeout for speed (seconds)
-  const prevTimeout = dmp.Diff_Timeout;
-  dmp.Diff_Timeout = selectedLength > CONFIG.scan.longText.length
-    ? CONFIG.scan.longText.diffTimeout
-    : (selectedLength > CONFIG.scan.mediumText.length
-        ? CONFIG.scan.mediumText.diffTimeout
-        : CONFIG.scan.shortText.diffTimeout);
+    // Fallback if very few candidates
+    if (approxCandidates.length < 5) {
+      console.warn(`[LicenseMatch] Fallback (<5 candidates).`);
+      const textTokenSet = new Set(selWords);
+      const overlapScores = [];
+      for (const lic of licenses) {
+        try {
+          let vec = licenseVectorsCache[lic.license_key];
+          if (!vec) {
+            const licData = await fetchWithCache(
+              `https://scancode-licensedb.aboutcode.org/${lic.json}`,
+              lic.license_key,
+              'licenses'
+            ).catch(() => null);
+            if (!licData || !licData.text) continue;
+            const norm = normalizeLicenseText(licData.text);
+            vec = createTextVector(norm);
+            licenseVectorsCache[lic.license_key] = vec;
+          }
+          const licKeys = Object.keys(vec);
+          let overlapCount = 0;
+          for (const t of licKeys) {
+            if (textTokenSet.has(t)) overlapCount++;
+          }
+          if (!overlapCount) continue;
+          const overlapCoeffVal = overlapCount / Math.min(textTokenSet.size, licKeys.length);
+          overlapScores.push({ lic, overlapCoeffVal, overlapCount });
+        } catch { /* ignore */ }
+      }
+      overlapScores.sort((a, b) => b.overlapCoeffVal - a.overlapCoeffVal || b.overlapCount - a.overlapCount);
+      for (const s of overlapScores.slice(0, 40)) {
+        try {
+          const licData = await fetchWithCache(
+            `https://scancode-licensedb.aboutcode.org/${s.lic.json}`,
+            s.lic.license_key,
+            'licenses'
+          );
+          if (!licData || !licData.text) continue;
+          const norm = normalizeLicenseText(licData.text);
+          approxCandidates.push({
+            license: s.lic.license_key,
+            name: licData.name,
+            spdx: s.lic.spdx_license_key,
+            approxSimilarity: s.overlapCoeffVal * 100,
+            licenseText: norm,
+            overlapCoeff: s.overlapCoeffVal
+          });
+        } catch { /* ignore */ }
+      }
+      console.warn(`[LicenseMatch] Fallback expanded candidates to ${approxCandidates.length}.`);
+    }
+
+    // Sort by approximate similarity and trim pool
+    approxCandidates.sort((a, b) => b.approxSimilarity - a.approxSimilarity);
+    const MAX_APPROX_POOL = 400;
+    if (approxCandidates.length > MAX_APPROX_POOL) approxCandidates.length = MAX_APPROX_POOL;
+
+    // Slightly widen diff pool for longer texts
+    if (selectedLength > CONFIG.scan.mediumText.length) {
+      dynamicMaxDiff = Math.min(dynamicMaxDiff + 10, MAX_DIFF_CANDIDATES);
+    }
+
+    // Diff cap (simple)
+    let effectiveDiffCap = Math.min(MAX_RESULTS * 2, dynamicMaxDiff, MAX_DIFF_CANDIDATES);
+
+    // Prepare diff
+    const prevTimeout = dmp.Diff_Timeout;
+    let baseDiffTimeout;
+    if (selectedLength > CONFIG.scan.longText.length) baseDiffTimeout = 0.08;
+    else if (selectedLength > CONFIG.scan.mediumText.length) baseDiffTimeout = 0.14;
+    else baseDiffTimeout = 0.18;
+    dmp.Diff_Timeout = baseDiffTimeout;
+
+    const DIFF_BUDGET_MS = selectedLength > 10000 ? 2200 :
+                           selectedLength > 6000  ? 2600 :
+                           selectedLength > 3000  ? 3000 : 3200;
 
     const refined = [];
-    const runDiffs = async (candidates) => {
-      for (const candidate of candidates) {
+    const startDiffPhase = performance.now();
+    let escalationsUsed = 0;
+    const MAX_ESCALATIONS = 10;
+    let diffEvaluated = 0;
+
+    function shouldEscalate(candidate, sims) {
+      if (sims.containmentPct >= 5) return false;
+      return (candidate.approxSimilarity || 0) >= (approxThreshold + 12);
+    }
+
+    async function runDiffs(cands) {
+      for (let idx = 0; idx < cands.length; idx++) {
+        if ((performance.now() - startDiffPhase) > DIFF_BUDGET_MS) {
+          console.warn('[LicenseMatch][Diff] Budget exceeded; stopping.');
+          break;
+        }
+        if (idx >= effectiveDiffCap) break;
+
+        const cand = cands[idx];
         try {
-          const diffForChar = dmp.diff_main(candidate.licenseText, selectedNormalized);
-          dmp.diff_cleanupEfficiency(diffForChar);
-          const charSim = computeCharSimilarityFromDiff(diffForChar, candidate.licenseText.length, selectedLength) * 100;
-          const displayDiff = dmp.diff_prettyHtml(diffForChar);
-          const rec = {
-            license: candidate.license,
-            name: candidate.name,
-            spdx: candidate.spdx,
-            charSimilarity: charSim.toFixed(2),
-            score: charSim.toFixed(2),
-            diff: displayDiff,
-            link: `<a href="https://scancode-licensedb.aboutcode.org/${candidate.license}.html" target="_blank">${candidate.name}</a> (${candidate.spdx})`
-          };
-          // Only keep matches meeting user-defined minimum
-          if (charSim >= FINAL_THRESHOLD) {
-            refined.push(rec);
+          if (!cand.canonLicense) cand.canonLicense = canonicalizeForDiff(cand.licenseText);
+          const canonLic = cand.canonLicense;
+
+          const saved = dmp.Diff_Timeout;
+          let diffChars = dmp.diff_main(canonLic, canonSelected);
+          dmp.diff_cleanupSemantic(diffChars);
+          let sims = computeDiffSimilarities(diffChars, canonLic.length, canonSelected.length);
+
+          if (shouldEscalate(cand, sims) && escalationsUsed < MAX_ESCALATIONS) {
+            escalationsUsed++;
+            dmp.Diff_Timeout = 0.6;
+            diffChars = dmp.diff_main(canonLic, canonSelected);
+            dmp.diff_cleanupSemantic(diffChars);
+            sims = computeDiffSimilarities(diffChars, canonLic.length, canonSelected.length);
+
+            if (sims.containmentPct < 5 && escalationsUsed < MAX_ESCALATIONS) {
+              escalationsUsed++;
+              dmp.Diff_Timeout = 0;
+              diffChars = dmp.diff_main(canonLic, canonSelected);
+              dmp.diff_cleanupSemantic(diffChars);
+              sims = computeDiffSimilarities(diffChars, canonLic.length, canonSelected.length);
+            }
+            dmp.Diff_Timeout = saved;
+          }
+
+          const finalScore =
+            0.5 * sims.containmentPct +
+            0.3 * sims.avgPct +
+            0.2 * sims.jaccardPct;
+
+          const passes =
+            sims.containmentPct >= FINAL_THRESHOLD ||
+            finalScore >= FINAL_THRESHOLD;
+
+          if (passes) {
+            let displayDiffHtml;
+            try {
+              displayDiffHtml = generateStableDisplayDiff(cand.licenseText, originalSelected);
+            } catch {
+              displayDiffHtml = '(diff error)';
+            }
+            refined.push({
+              license: cand.license,
+              name: cand.name,
+              spdx: cand.spdx,
+              charSimilarity: finalScore.toFixed(2),
+              diff: displayDiffHtml,
+              diffMetrics: {
+                containment: sims.containmentPct.toFixed(2),
+                avg: sims.avgPct.toFixed(2),
+                jaccard: sims.jaccardPct.toFixed(2)
+              },
+              score: finalScore.toFixed(2),
+              link: `https://scancode-licensedb.aboutcode.org/${cand.license}.html`
+            });
           }
         } catch (e) {
-          // ignore failed diff
+          console.error('[LicenseMatch][DiffErr]', cand?.license, e);
         }
-        // progress update every 10 items
-        diffEvaluated++;
-        if (diffEvaluated % 10 === 0) {
-          sendProgress({ checked: checkedLicenses, total: totalLicenses, promising: candidates.length, message: `Refining diffs ${diffEvaluated}/${candidates.length}...` });
-        }
-        if (refined.length >= MAX_RESULTS) break;
-      }
-    };
 
+        diffEvaluated++;
+        if (refined.length >= MAX_RESULTS) break;
+        if (diffEvaluated % 15 === 0) {
+          sendProgress({
+            checked: checkedLicenses,
+            total: totalLicenses,
+            promising: cands.length,
+            message: `Refining ${diffEvaluated}/${cands.length}...`
+          });
+        }
+      }
+    }
+
+    const toRefine = approxCandidates.slice(0, Math.min(effectiveDiffCap, approxCandidates.length));
+    console.log(
+      `[LicenseMatch][SelectDiff] selectionLen=${selectedLength} approxCandidates=${approxCandidates.length} ` +
+      `refining=${toRefine.length} cap=${effectiveDiffCap} timeout=${baseDiffTimeout} budgetMs=${DIFF_BUDGET_MS}`
+    );
     await runDiffs(toRefine);
 
-    // Expand once if needed
-    if (refined.length < MAX_RESULTS && approxCandidates.length > toRefine.length) {
+    if (refined.length < Math.max(2, Math.floor(MAX_RESULTS / 2)) &&
+        (performance.now() - startDiffPhase) < (DIFF_BUDGET_MS * 0.6) &&
+        approxCandidates.length > toRefine.length) {
+
       const expansion = approxCandidates.slice(
         toRefine.length,
-        Math.min(approxCandidates.length, dynamicMaxDiff * 2, MAX_DIFF_CANDIDATES)
+        Math.min(approxCandidates.length, toRefine.length + (MAX_RESULTS * 2))
       );
       if (expansion.length) {
-        sendProgress({ checked: checkedLicenses, total: totalLicenses, promising: expansion.length, message: `Expanding refinement (+${expansion.length})...` });
+        sendProgress({
+          checked: checkedLicenses,
+          total: totalLicenses,
+          promising: expansion.length,
+          message: `Expanding refinement (+${expansion.length})...`
+        });
         await runDiffs(expansion);
       }
     }
 
-    // Restore previous timeout
     dmp.Diff_Timeout = prevTimeout;
 
-    // Sort and return only the qualifying matches; do not backfill with lower scores
-    refined.sort((a, b) => parseFloat(b.charSimilarity) - parseFloat(a.charSimilarity));
+    console.log('[LicenseMatch][DiffStats]', {
+      diffEvaluated,
+      refined: refined.length,
+      escalationsUsed,
+      timeMs: (performance.now() - startDiffPhase).toFixed(1)
+    });
+
     return refined.slice(0, MAX_RESULTS);
-  } catch (error) {
-    console.error("Error in fetchLicenses:", error);
-    throw error;
+  } catch (err) {
+    console.error('Error in fetchLicenses:', err);
+    throw err;
   }
 }
 
@@ -625,15 +973,15 @@ async function processLicenseCheck(selectedText) {
     showNotification(originTabId, 'Please select some text to compare with licenses.', 'warning');
     return;
   }
-  
+
   if (activeScans.has(originTabId)) {
     showNotification(originTabId, 'Already processing a license check. Please wait...', 'info');
     return;
   }
-  
+
   // Mark this tab as having an active scan
   activeScans.add(originTabId);
-  
+
   try {
     // Make sure content script is available
     const ready = await ensureContentScript(originTabId);
@@ -642,50 +990,50 @@ async function processLicenseCheck(selectedText) {
       return;
     }
     // Show UI and clear previous results with retry
-    for (const m of ['showUI','clearResults']) {
+    for (const m of ['showUI', 'clearResults']) {
       try {
         await sendMessageToTab(originTabId, { action: m });
       } catch (msgErr) {
         console.warn('Retrying message', m, 'after brief delay due to', msgErr.message);
-        await new Promise(r=>setTimeout(r,100));
+        await new Promise(r => setTimeout(r, 100));
         await sendMessageToTab(originTabId, { action: m });
       }
     }
-    
+
     // Progress callback for reporting scan progress
     const sendProgress = async (progress) => {
       try {
-        await sendMessageToTab(originTabId, { 
-          action: 'progressUpdate', 
-          progress 
+        await sendMessageToTab(originTabId, {
+          action: 'progressUpdate',
+          progress
         });
       } catch (error) {
         console.error('Error sending progress update:', error);
       }
     };
-    
+
     // Fetch and compare licenses
     const matches = await fetchLicenses(selectedText, sendProgress);
-    
+
     if (matches && matches.length > 0) {
       console.log('Sending showResults with', matches.length, 'matches. Top license:', matches[0]?.license);
       // Report the matches to the content script
-      await sendMessageToTab(originTabId, { 
-        action: 'showResults', 
-        matches 
+      await sendMessageToTab(originTabId, {
+        action: 'showResults',
+        matches
       });
     } else {
-      await sendMessageToTab(originTabId, { 
-        action: 'showError', 
-        error: 'No significant license matches found.' 
+      await sendMessageToTab(originTabId, {
+        action: 'showError',
+        error: 'No significant license matches found.'
       });
     }
   } catch (error) {
     console.error('Error processing license check:', error);
     try {
-      await sendMessageToTab(originTabId, { 
-        action: 'showError', 
-        error: error.message || 'An unknown error occurred' 
+      await sendMessageToTab(originTabId, {
+        action: 'showError',
+        error: error.message || 'An unknown error occurred'
       });
     } catch (err) {
       console.error('Error showing error notification:', err);
@@ -726,30 +1074,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.action === 'checkLicense') {
     const selectedText = message.text;
-    
+
     // Send an immediate response to keep the message port alive
     sendResponse({ status: 'processing' });
-    
+
     // Store the tab ID that initiated the request
     originTabId = sender.tab ? sender.tab.id : null;
-    
+
     if (!originTabId) {
       // If no tab ID is available (e.g., sent from popup), get the current active tab
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (chrome.runtime.lastError || !tabs || tabs.length === 0) {
-          console.error('Error getting active tab:', chrome.runtime.lastError ? 
-                        chrome.runtime.lastError.message : 'No active tabs found');
+          console.error('Error getting active tab:', chrome.runtime.lastError ?
+            chrome.runtime.lastError.message : 'No active tabs found');
           return;
         }
-        
+
         originTabId = tabs[0].id;
         processLicenseCheck(selectedText);
       });
     } else {
-      // We have the sender tab ID
       processLicenseCheck(selectedText);
     }
-    
+
     return false; // Don't need to keep port open for asynchronous response
   } else if (message.action === 'noTextSelected') {
     // Handle no text selected
@@ -779,7 +1126,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(error => sendResponse({ error: error.message || 'Unknown error' }));
     return true; // Keep port open for async response
   }
-  
+
   // Default response for other messages
   sendResponse({ status: 'received' });
   return false;
@@ -789,10 +1136,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function getDatabaseInfo() {
   try {
     const db = await openDatabase();
-    
+
     // Get initialization status
     const isInitialized = await isDatabaseInitialized();
-    
+
     // Get last update timestamp
     let lastUpdate = null;
     try {
@@ -809,7 +1156,7 @@ async function getDatabaseInfo() {
     } catch (error) {
       console.error('Error getting last update:', error);
     }
-    
+
     // Get license count
     let licenseCount = 0;
     try {
@@ -823,10 +1170,10 @@ async function getDatabaseInfo() {
     } catch (error) {
       console.error('Error getting license count:', error);
     }
-    
+
     // Get LicenseDB version from GitHub API
     let licenseDbVersion = await getLicenseDbVersionFromGitHub();
-    
+
     return {
       isInitialized,
       lastUpdate,
@@ -852,7 +1199,7 @@ async function getLicenseDbVersionFromGitHub() {
     if (!resp.ok) throw new Error('Failed to fetch license index for version');
     const text = await resp.text();
     // lightweight hash
-    let hash = 0; for (let i=0;i<text.length;i++) { hash = (hash * 31 + text.charCodeAt(i)) >>> 0; }
+    let hash = 0; for (let i = 0; i < text.length; i++) { hash = (hash * 31 + text.charCodeAt(i)) >>> 0; }
     const version = `idx-${hash}-${text.length}`;
     await cacheLicenseDbVersion(version);
     return version;
@@ -911,8 +1258,7 @@ async function forceUpdateDatabase() {
 
     // Filter out deprecated licenses
     const licenses = licenseList.filter(obj => !obj.is_deprecated);
-
-    sendProgressUpdate(10, `Found ${licenses.length} non-deprecated licenses`);
+    console.log(`Found ${licenses.length} non-deprecated licenses`);
 
     // Store the updated index
     const db = await openDatabase();
@@ -955,7 +1301,7 @@ async function forceUpdateDatabase() {
             request.onsuccess = () => resolve();
             request.onerror = (error) => reject(error);
           });
-          
+
           // Pre-calculate and store the license text vector
           if (licenseData.text) {
             const vector = createTextVector(licenseData.text);
@@ -981,7 +1327,7 @@ async function forceUpdateDatabase() {
         percentComplete,
         `Processing licenses: ${processed}/${totalLicenses} (${failures} failures)`
       );
-      
+
       // Update badge to show progress
       chrome.action.setBadgeText({ text: `${Math.round(percentComplete)}%` });
     }
@@ -1017,7 +1363,7 @@ async function forceUpdateDatabase() {
     setTimeout(() => {
       updateBadge("green");
     }, 5000);
-    
+
     throw error;
   }
 }
@@ -1027,10 +1373,10 @@ async function resetDatabase() {
   try {
     // Set badge to indicate reset in progress
     updateBadge("orange");
-    
+
     // Send initial progress to options page
     sendProgressUpdate(0, 'Deleting database...');
-    
+
     // Delete the database
     await new Promise((resolve, reject) => {
       const deleteRequest = indexedDB.deleteDatabase('LicenseDB');
@@ -1091,7 +1437,7 @@ chrome.action.onClicked.addListener(async (tab) => {
   try {
     const url = tab.url || '';
     if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') ||
-        url.startsWith('about:') || url.startsWith('edge://')) {
+      url.startsWith('about:') || url.startsWith('edge://')) {
       console.warn('Cannot run on this page type:', url);
       return;
     }
@@ -1128,7 +1474,7 @@ chrome.action.onClicked.addListener(async (tab) => {
       const best = candidates.reduce((a, b) => (b.text.length > a.text.length ? b : a));
 
       // Send single message to existing handler (adds iframe metadata for future use)
-  // Directly initiate processing instead of round-trip messaging
+      // Directly initiate processing instead of round-trip messaging
       originTabId = tab.id;
       // Ensure content script/UI is present before processing (attempt a lightweight showUI message)
       sendMessageToTab(tab.id, { action: 'showUI' })
@@ -1174,7 +1520,7 @@ async function isUpdateNeeded() {
 
       request.onsuccess = (event) => {
         const result = event.target.result;
-        
+
         if (!result || !result.timestamp) {
           // No timestamp found, update needed
           resolve(true);
@@ -1308,19 +1654,19 @@ async function checkForDatabaseUpdates() {
         // Update progress
         processed += batch.length;
         const percentComplete = Math.round((processed / totalLicenses) * 100);
-        
+
         // Update badge to show progress
         chrome.action.setBadgeText({ text: `${percentComplete}%` });
       }
 
       // Record the update timestamp
       await recordUpdateTimestamp();
-      
+
       console.log(`License database update completed. Processed ${processed} licenses with ${failures} failures.`);
 
       // Reset badge
       updateBadge("green");
-      
+
       return true;
     } catch (error) {
       console.error('Error updating license database:', error);
@@ -1337,6 +1683,45 @@ async function checkForDatabaseUpdates() {
     console.log('License database is up to date');
     return true;
   }
+}
+
+function prepareDisplayText(text) {
+  return (text || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\u00a0/g, ' ');
+}
+
+/**
+ * Produce a stable pretty HTML diff between two display texts, retrying if an early timeout
+ * yields a degenerate full delete + full insert result.
+ */
+function generateStableDisplayDiff(licenseText, selectionText) {
+  const originalTimeout = dmp.Diff_Timeout;
+  dmp.Diff_Timeout = Math.max(originalTimeout, 1.0); // give more time for UI diff
+
+  const a = prepareDisplayText(licenseText);
+  const b = prepareDisplayText(selectionText);
+
+  let diff = dmp.diff_main(a, b);
+  dmp.diff_cleanupSemantic(diff);
+
+  const degenerate = (
+    diff.length === 2 &&
+    diff[0][0] === -1 &&
+    diff[1][0] === 1 &&
+    diff[0][1].length === a.length &&
+    diff[1][1].length === b.length
+  );
+
+  if (degenerate) {
+    console.warn('[LicenseMatch][DisplayDiff] Degenerate diff; retry unlimited.');
+    dmp.Diff_Timeout = 0;
+    diff = dmp.diff_main(a, b);
+    dmp.diff_cleanupSemantic(diff);
+  }
+
+  dmp.Diff_Timeout = originalTimeout;
+  return dmp.diff_prettyHtml(diff);
 }
 
 function updateBadge(color){
@@ -1376,18 +1761,3 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     });
   }
 });
-
-// Load user settings (with defaults from CONFIG)
-async function loadUserSettings() {
-  const defaults = {
-    maxResults: CONFIG.scan.maxResults,
-    minSimilarityPct: CONFIG.scan.finalThresholdPct
-  };
-  return new Promise((resolve) => {
-    try {
-      chrome.storage?.sync?.get(defaults, (items) => resolve(items || defaults));
-    } catch {
-      resolve(defaults);
-    }
-  });
-}
