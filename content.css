@@ -290,7 +290,7 @@
 
 #license-diff-display del {
   background-color: #ffebee;
-  text-decoration: none;
+  text-decoration: line-through;
   padding: 0 3px;
   border-radius: 3px;
   margin: 0 1px;

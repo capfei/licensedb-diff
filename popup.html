@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>License Diff</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 12px; width: 220px; }
+    fieldset { border: none; padding: 0; margin: 0 0 8px 0; }
+    label { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+    button { width: 100%; padding: 6px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <fieldset id="filter-form">
+    <label><input type="radio" name="scanFilter" value="licenses" />Licenses only</label>
+    <label><input type="radio" name="scanFilter" value="exceptions" />Exceptions only</label>
+    <label><input type="radio" name="scanFilter" value="both" />Licenses + Exceptions</label>
+  </fieldset>
+  <button id="run-scan" type="button">Run comparison</button>
+  <script src="popup.js"></script>
+</body>
+</html>

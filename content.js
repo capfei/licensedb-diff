@@ -64,16 +64,19 @@ if (window.__LICENSE_DIFF_LOADED__) {
   // Add a link for matches
   const linkDisplay = document.createElement('div');
   linkDisplay.id = 'license-diff-url';
+  linkDisplay.style.display = 'none';
 
   // Dropdown for matches
   const dropdown = document.createElement('select');
   dropdown.id = 'license-diff-dropdown';
+  dropdown.style.display = 'none';
   uiContainer.appendChild(dropdown);
   uiContainer.appendChild(linkDisplay);
 
   // Add a container for the diff
   const diffContainer = document.createElement('div');
   diffContainer.id = 'license-diff-display';
+  diffContainer.style.display = 'none';
   uiContainer.appendChild(diffContainer);
 
   // Append the UI to the webpage
@@ -175,9 +178,11 @@ if (window.__LICENSE_DIFF_LOADED__) {
     } else if (message.action === 'clearResults') {
       // Clear previous results
       dropdown.innerHTML = '';
-
-      document.getElementById('license-diff-url').innerHTML = '';
-      document.getElementById('license-diff-display').innerHTML = '';
+      dropdown.style.display = 'none';
+      linkDisplay.style.display = 'none';
+      linkDisplay.innerHTML = '';
+      diffContainer.style.display = 'none';
+      diffContainer.innerHTML = '';
 
       const progressBar = document.getElementById('license-diff-progress');
       // Reset progress
@@ -243,7 +248,7 @@ if (window.__LICENSE_DIFF_LOADED__) {
       dropdown.onchange = () => {
         const sel = matches.find(m => m.license === dropdown.value);
         if (!sel) return;
-        document.getElementById('license-diff-url').innerHTML = sel.link;
+        linkDisplay.innerHTML = sel.link;
         
         const a = linkDisplay.querySelector('a');
         if (a) {
@@ -257,6 +262,10 @@ if (window.__LICENSE_DIFF_LOADED__) {
         diffContainer.innerHTML = sel.diff;
         setupCopyButtons();
       };
+
+      dropdown.style.display = 'block';
+      linkDisplay.style.display = 'block';
+      diffContainer.style.display = 'block';
 
       if (matches.length) {
         dropdown.selectedIndex = 0;

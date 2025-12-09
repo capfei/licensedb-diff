@@ -1,14 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "LicenseDB Diff",
-  "version": "0.0.3",
-  "description": "Compare selected text with ScanCode LicenseDB.",
+  "name": "LicenseDB License Diff",
+  "version": "0.0.5",
+  "description": "Compares and diffs selected text using AboutCode's ScanCode LicenseDB license list.",
   "permissions": [
     "activeTab",
     "scripting",
     "tabs",
     "alarms",
     "storage"
+  ],
+  "host_permissions": [
+    "https://scancode-licensedb.aboutcode.org/*"
   ],
   "background": {
     "service_worker": "background.js",

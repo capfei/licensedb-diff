@@ -30,6 +30,30 @@ const CONFIG = {
     periodicAlarmMinutes: 60 * 24
   }
 };
+function updateBadge(color) {
+  switch (color) {
+    case 'green':
+      chrome.action.setBadgeText({ text: 'Diff' });
+      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
+      break;
+    case 'red':
+      chrome.action.setBadgeText({ text: 'Error' });
+      chrome.action.setBadgeBackgroundColor({ color: '#F44336' });
+      break;
+    case 'orange':
+      chrome.action.setBadgeText({ text: 'Load' });
+      chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' });
+      break;
+    default:
+      chrome.action.setBadgeText({ text: '' });
+  }
+}
+const FILTER_OPTIONS = Object.freeze({ LICENSES: 'licenses', EXCEPTIONS: 'exceptions', BOTH: 'both' });
+let currentScanFilter = FILTER_OPTIONS.BOTH;
+function normalizeFilter(value) {
+  return Object.values(FILTER_OPTIONS).includes(value) ? value : FILTER_OPTIONS.BOTH;
+}
+try { chrome.action.setPopup({ popup: 'popup.html' }); } catch (err) { console.warn('Popup attach failed:', err); }
 
 let originTabId; // Store the ID of the tab that initiated the license check
 const dmp = new DiffMatchPatch();
@@ -189,7 +213,7 @@ async function preloadLicenseDatabase() {
           failures++;
           console.error(`Error processing license ${license.license_key}:`, error);
         }
-      }));
+      })); // correct closure: Promise.all( batch.map(fn )
 
       // Update progress
       processed += batch.length;
@@ -379,6 +403,17 @@ function canonicalizeForDiff(text) {
     .toLowerCase();
 }
 
+// Prepare text for visual diff (light cleanup, keep original casing)
+function prepareDisplayText(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/\r\n/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function computeDiffSimilarities(diff, lenA, lenB) {
   let same = 0;
   for (const tuple of diff) {
@@ -550,12 +585,17 @@ function jaccard(setA, setB) {
 async function loadUserSettings() {
   const defaults = {
     maxResults: CONFIG.scan.maxResults,
-    minSimilarityPct: CONFIG.scan.finalThresholdPct
+    minSimilarityPct: CONFIG.scan.finalThresholdPct,
+    scanFilter: FILTER_OPTIONS.BOTH
   };
   return new Promise((resolve) => {
     try {
-      chrome.storage?.sync?.get(defaults, (items) => resolve(items || defaults));
+      chrome.storage?.sync?.get(defaults, (items) => {
+        currentScanFilter = normalizeFilter(items?.scanFilter);
+        resolve(items || defaults);
+      });
     } catch {
+      currentScanFilter = defaults.scanFilter;
       resolve(defaults);
     }
   });
@@ -568,7 +608,8 @@ async function loadUserSettings() {
  * @param {(progress: {checked:number,total:number,promising:number,message:string})=>void} sendProgress progress callback
  * @returns {Promise<Array<{license:string,name:string,spdx:string,charSimilarity:string,score:string,diff:string,link:string}>>}
  */
-async function fetchLicenses(text, sendProgress) {
+async function fetchLicenses(text, sendProgress, options = {}) {
+  const scanFilter = normalizeFilter(options.filter || currentScanFilter);
   const originalSelected = text;
   // Ensure database initialized
   if (!(await isDatabaseInitialized())) {
@@ -583,7 +624,18 @@ async function fetchLicenses(text, sendProgress) {
       'index',
       'metadata'
     );
-    const licenses = licenseList.filter(l => !l.is_deprecated);
+    const filteredLicenses = licenseList
+      .filter(l => !l.is_deprecated)
+      .filter(l => {
+        if (scanFilter === FILTER_OPTIONS.LICENSES) return !l.is_exception;
+        if (scanFilter === FILTER_OPTIONS.EXCEPTIONS) return l.is_exception === true;
+        return true;
+      });
+    if (!filteredLicenses.length) {
+      console.warn('[LicenseMatch] No entries match filter', scanFilter);
+      return [];
+    }
+    const licenses = filteredLicenses;
 
     // User settings
     const userSettings = await loadUserSettings();
@@ -599,6 +651,7 @@ async function fetchLicenses(text, sendProgress) {
     const selectedNormalized = normalizeLicenseText(text);
     const selectedLength = selectedNormalized.length;
     const canonSelected = canonicalizeForDiff(selectedNormalized);
+    const isLongSelection = selectedLength > CONFIG.scan.longText.length;
 
     // Selection fingerprint (debug)
     (function fingerprint() {
@@ -648,7 +701,7 @@ async function fetchLicenses(text, sendProgress) {
     const totalLicenses = licenses.length;
     let checkedLicenses = 0;
     let approxPromising = 0;
-    sendProgress({ checked: 0, total: totalLicenses, promising: 0, message: 'Scanning (approx phase)...' });
+    await sendProgress({ checked: 0, total: totalLicenses, promising: 0, message: 'Scanning (approx phase)...' });
 
     const approxCandidates = [];
     let quickPass = 0, quickFail = 0, approxBelow = 0;
@@ -667,81 +720,103 @@ async function fetchLicenses(text, sendProgress) {
           if (!licData || !licData.text) return null;
 
           const licenseTextNorm = normalizeLicenseText(licData.text);
+          // Cache canonical once
+          const canonLic = canonicalizeForDiff(licenseTextNorm);
           let licenseVector = licenseVectorsCache[lic.license_key];
           if (!licenseVector) {
             licenseVector = createTextVector(licenseTextNorm);
             licenseVectorsCache[lic.license_key] = licenseVector;
           }
 
-            // Quick structural filter
-          if (!quickSimilarityCheck(textVector, licenseVector)) {
-            quickFail++;
-            return null;
+        // Quick structural filter
+        if (!quickSimilarityCheck(textVector, licenseVector)) {
+          quickFail++;
+          return null;
+        }
+        quickPass++;
+
+        // Approx char similarity (%)
+        const approxPct = approximateCharSimilarity(
+          textVector, licenseVector, wordLenCache,
+          selectedLength, licenseTextNorm.length
+        ) * 100;
+
+        // Hybrid light metrics
+        const licWords = Object.keys(licenseVector);
+        const overlapCoeffVal = overlapCoefficient(selWords, licWords);
+        let cosineVal = 0;
+        if (selTfidf) {
+          const licTfidf = buildTfidfVector(licenseVector, docFreqCache, totalDocsCache || 1);
+          cosineVal = cosine(selTfidf, licTfidf);
+        }
+        let shingleJac = 0;
+        if (selShingles.size) {
+          let licShingles = licenseShingleCache[lic.license_key];
+          if (!licShingles) {
+            licShingles = buildShingles(licWords, 5);
+            licenseShingleCache[lic.license_key] = licShingles;
           }
-          quickPass++;
+          if (licShingles.size) shingleJac = jaccard(selShingles, licShingles);
+        }
 
-          // Approx char similarity (%)
-          const approxPct = approximateCharSimilarity(
-            textVector, licenseVector, wordLenCache,
-            selectedLength, licenseTextNorm.length
-          ) * 100;
+        // Segment-based similarity only for long selections (skip for short to keep fast)
+        const segSimPct = isLongSelection ? (computeSegmentSimilarity(canonLic, canonSelected) * 100) : 0;
 
-          // Hybrid light metrics
-          const licWords = Object.keys(licenseVector);
-          const overlapCoeffVal = overlapCoefficient(selWords, licWords);
-          let cosineVal = 0;
-          if (selTfidf) {
-            const licTfidf = buildTfidfVector(licenseVector, docFreqCache, totalDocsCache || 1);
-            cosineVal = cosine(selTfidf, licTfidf);
-          }
-          let shingleJac = 0;
-          if (selShingles.size) {
-            let licShingles = licenseShingleCache[lic.license_key];
-            if (!licShingles) {
-              licShingles = buildShingles(licWords, 5);
-              licenseShingleCache[lic.license_key] = licShingles;
-            }
-            if (licShingles.size) shingleJac = jaccard(selShingles, licShingles);
-          }
+        // Blend: conservative weighted blend. For short selections, ignore segSimPct.
+        const combined = isLongSelection
+          ? Math.max(
+              segSimPct,
+              (
+                0.42 * (approxPct) +
+                0.28 * (overlapCoeffVal * 100) +
+                0.18 * (cosineVal * 100) +
+                0.12 * (shingleJac * 100)
+              )
+            )
+          : (
+              0.50 * (approxPct) +
+              0.30 * (overlapCoeffVal * 100) +
+              0.20 * (cosineVal * 100)
+            );
 
-          const combined = (
-            0.45 * (approxPct / 100) +
-            0.30 * overlapCoeffVal +
-            0.15 * cosineVal +
-            0.10 * shingleJac
-          ) * 100;
+        // Pass if any component is reasonably good
+        const pass =
+          combined >= (approxThreshold - 1) ||
+          approxPct >= approxThreshold ||
+          overlapCoeffVal >= 0.42 ||
+          cosineVal >= 0.22 ||
+          (isLongSelection && segSimPct >= (approxThreshold + 2));
 
-          const pass =
-            approxPct >= approxThreshold ||
-            combined >= (approxThreshold - 2) ||
-            overlapCoeffVal >= 0.45 ||
-            cosineVal >= 0.25;
+        if (!pass) {
+          approxBelow++;
+          return null;
+        }
 
-          if (!pass) {
-            approxBelow++;
-            return null;
-          }
-
-          return {
-            license: lic.license_key,
-            name: licData.name,
-            spdx: lic.spdx_license_key,
-            approxSimilarity: combined,
-            rawApprox: approxPct,
-            overlapCoeff: overlapCoeffVal,
-            cosine: cosineVal,
-            shingleJac,
-            licenseText: licenseTextNorm
-          };
+        return {
+          license: lic.license_key,
+          name: licData.name,
+          spdx: lic.spdx_license_key,
+          approxSimilarity: combined,
+          rawApprox: approxPct,
+          overlapCoeff: overlapCoeffVal,
+          cosine: cosineVal,
+          shingleJac,
+          segSimPct,
+          licenseText: licenseTextNorm,
+          canonLicense: canonLic
+        };
         } catch {
           return null;
         }
-      }));
+      })); // correct closure: Promise.all( batch.map(fn )
+
+      // Small cooperative yield to avoid blocking
+      await new Promise(r => setTimeout(r, 0));
 
       for (const r of batchResults) if (r) approxCandidates.push(r);
       checkedLicenses += batch.length;
       approxPromising = approxCandidates.length;
-      sendProgress({
+      await sendProgress({
         checked: checkedLicenses,
         total: totalLicenses,
         promising: approxPromising,
@@ -806,10 +881,12 @@ async function fetchLicenses(text, sendProgress) {
       console.warn(`[LicenseMatch] Fallback expanded candidates to ${approxCandidates.length}.`);
     }
 
-    // Sort by approximate similarity and trim pool
-    approxCandidates.sort((a, b) => b.approxSimilarity - a.approxSimilarity);
-    const MAX_APPROX_POOL = 400;
-    if (approxCandidates.length > MAX_APPROX_POOL) approxCandidates.length = MAX_APPROX_POOL;
+    // Sort by strongest signal: for long, consider segSim; for short, use approxSimilarity
+    approxCandidates.sort((a, b) => {
+      const aKey = isLongSelection ? Math.max(a.approxSimilarity || 0, a.segSimPct || 0) : (a.approxSimilarity || 0);
+      const bKey = isLongSelection ? Math.max(b.approxSimilarity || 0, b.segSimPct || 0) : (b.approxSimilarity || 0);
+      return bKey - aKey;
+    });
 
     // Slightly widen diff pool for longer texts
     if (selectedLength > CONFIG.scan.mediumText.length) {
@@ -828,14 +905,15 @@ async function fetchLicenses(text, sendProgress) {
     dmp.Diff_Timeout = baseDiffTimeout;
 
     const DIFF_BUDGET_MS = selectedLength > 10000 ? 2200 :
-                           selectedLength > 6000  ? 2600 :
-                           selectedLength > 3000  ? 3000 : 3200;
+                         selectedLength > 6000  ? 2600 :
+                         selectedLength > 3000  ? 3000 : 3200;
 
     const refined = [];
     const startDiffPhase = performance.now();
     let escalationsUsed = 0;
     const MAX_ESCALATIONS = 10;
     let diffEvaluated = 0;
+    let budgetExceeded = false; // track budget exhaustion
 
     function shouldEscalate(candidate, sims) {
       if (sims.containmentPct >= 5) return false;
@@ -846,36 +924,36 @@ async function fetchLicenses(text, sendProgress) {
       for (let idx = 0; idx < cands.length; idx++) {
         if ((performance.now() - startDiffPhase) > DIFF_BUDGET_MS) {
           console.warn('[LicenseMatch][Diff] Budget exceeded; stopping.');
+          budgetExceeded = true;
           break;
         }
         if (idx >= effectiveDiffCap) break;
 
         const cand = cands[idx];
         try {
-          if (!cand.canonLicense) cand.canonLicense = canonicalizeForDiff(cand.licenseText);
-          const canonLic = cand.canonLicense;
+          const canonLic = cand.canonLicense || canonicalizeForDiff(cand.licenseText);
 
+          // Cap timeout even for top candidates to avoid stalling
           const saved = dmp.Diff_Timeout;
+          if (isLongSelection && idx < 3) {
+            dmp.Diff_Timeout = Math.max(baseDiffTimeout, 0.8); // was 0 (unlimited), now capped
+          } else {
+            dmp.Diff_Timeout = baseDiffTimeout;
+          }
+
           let diffChars = dmp.diff_main(canonLic, canonSelected);
           dmp.diff_cleanupSemantic(diffChars);
           let sims = computeDiffSimilarities(diffChars, canonLic.length, canonSelected.length);
 
-          if (shouldEscalate(cand, sims) && escalationsUsed < MAX_ESCALATIONS) {
-            escalationsUsed++;
-            dmp.Diff_Timeout = 0.6;
+          // If segment similarity was good but containment low, try one escalation (only for long selections)
+          if (isLongSelection && cand.segSimPct >= (approxThreshold + 6) && sims.containmentPct < FINAL_THRESHOLD) {
+            dmp.Diff_Timeout = Math.max(saved, 0.6);
             diffChars = dmp.diff_main(canonLic, canonSelected);
             dmp.diff_cleanupSemantic(diffChars);
             sims = computeDiffSimilarities(diffChars, canonLic.length, canonSelected.length);
-
-            if (sims.containmentPct < 5 && escalationsUsed < MAX_ESCALATIONS) {
-              escalationsUsed++;
-              dmp.Diff_Timeout = 0;
-              diffChars = dmp.diff_main(canonLic, canonSelected);
-              dmp.diff_cleanupSemantic(diffChars);
-              sims = computeDiffSimilarities(diffChars, canonLic.length, canonSelected.length);
-            }
-            dmp.Diff_Timeout = saved;
           }
+
+          dmp.Diff_Timeout = saved;
 
           const finalScore =
             0.5 * sims.containmentPct +
@@ -914,8 +992,12 @@ async function fetchLicenses(text, sendProgress) {
 
         diffEvaluated++;
         if (refined.length >= MAX_RESULTS) break;
+
+        // Yield periodically
+        if (idx % 10 === 0) await new Promise(r => setTimeout(r, 0));
+
         if (diffEvaluated % 15 === 0) {
-          sendProgress({
+          await sendProgress({
             checked: checkedLicenses,
             total: totalLicenses,
             promising: cands.length,
@@ -932,16 +1014,17 @@ async function fetchLicenses(text, sendProgress) {
     );
     await runDiffs(toRefine);
 
-    if (refined.length < Math.max(2, Math.floor(MAX_RESULTS / 2)) &&
-        (performance.now() - startDiffPhase) < (DIFF_BUDGET_MS * 0.6) &&
-        approxCandidates.length > toRefine.length) {
+    if (!budgetExceeded &&
+      refined.length < Math.max(2, Math.floor(MAX_RESULTS / 2)) &&
+      (performance.now() - startDiffPhase) < (DIFF_BUDGET_MS * 0.6) &&
+      approxCandidates.length > toRefine.length) {
 
       const expansion = approxCandidates.slice(
         toRefine.length,
         Math.min(approxCandidates.length, toRefine.length + (MAX_RESULTS * 2))
       );
       if (expansion.length) {
-        sendProgress({
+        await sendProgress({
           checked: checkedLicenses,
           total: totalLicenses,
           promising: expansion.length,
@@ -960,6 +1043,13 @@ async function fetchLicenses(text, sendProgress) {
       timeMs: (performance.now() - startDiffPhase).toFixed(1)
     });
 
+    await sendProgress({
+      checked: checkedLicenses,
+      total: totalLicenses,
+      promising: approxCandidates.length,
+      message: refined.length ? `Completed with ${refined.length} match(es).` : 'Completed. No significant matches.'
+    });
+
     return refined.slice(0, MAX_RESULTS);
   } catch (err) {
     console.error('Error in fetchLicenses:', err);
@@ -968,7 +1058,7 @@ async function fetchLicenses(text, sendProgress) {
 }
 
 // Process a license check request
-async function processLicenseCheck(selectedText) {
+async function processLicenseCheck(selectedText, scanFilter = FILTER_OPTIONS.BOTH) {
   if (!selectedText || selectedText.trim().length === 0) {
     showNotification(originTabId, 'Please select some text to compare with licenses.', 'warning');
     return;
@@ -1013,7 +1103,7 @@ async function processLicenseCheck(selectedText) {
     };
 
     // Fetch and compare licenses
-    const matches = await fetchLicenses(selectedText, sendProgress);
+    const matches = await fetchLicenses(selectedText, sendProgress, { filter: normalizeFilter(scanFilter) });
 
     if (matches && matches.length > 0) {
       console.log('Sending showResults with', matches.length, 'matches. Top license:', matches[0]?.license);
@@ -1074,7 +1164,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.action === 'checkLicense') {
     const selectedText = message.text;
-
+    const scanFilter = normalizeFilter(message.filter || currentScanFilter);
     // Send an immediate response to keep the message port alive
     sendResponse({ status: 'processing' });
 
@@ -1091,10 +1181,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
 
         originTabId = tabs[0].id;
-        processLicenseCheck(selectedText);
+        processLicenseCheck(selectedText, scanFilter);
       });
     } else {
-      processLicenseCheck(selectedText);
+      processLicenseCheck(selectedText, scanFilter);
     }
 
     return false; // Don't need to keep port open for asynchronous response
@@ -1125,6 +1215,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(() => sendResponse({ success: true }))
       .catch(error => sendResponse({ error: error.message || 'Unknown error' }));
     return true; // Keep port open for async response
+  } else if (message.action === 'startScanWithFilter') {
+    const chosenFilter = normalizeFilter(message.filter);
+    currentScanFilter = chosenFilter;
+    chrome.storage?.sync?.set({ scanFilter: chosenFilter }, () => { initiateScanForActiveTab(chosenFilter); });
+    sendResponse({ started: true });
+    return true;
   }
 
   // Default response for other messages
@@ -1420,30 +1516,60 @@ async function resetDatabase() {
   }
 }
 
+// Record the timestamp of the current update
+async function recordUpdateTimestamp() {
+  try {
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(['status'], 'readwrite');
+      const store = tx.objectStore('status');
+      const req = store.put({ id: 'last_update', timestamp: new Date().toISOString() });
+      req.onsuccess = () => resolve(true);
+      req.onerror = (error) => reject(error);
+    });
+  } catch (error) {
+    console.error('Error recording update timestamp:', error);
+    return false;
+  }
+}
+
 // Function to send progress updates to the options page
 function sendProgressUpdate(progress, message, complete = false) {
-  chrome.runtime.sendMessage({
-    action: 'updateProgress',
-    progress: progress,
-    message: message,
-    complete: complete
-  }).catch(error => {
-    console.log('Could not send progress update (options page may be closed)', error);
-  });
+  try {
+    chrome.runtime.sendMessage({
+      action: 'updateProgress',
+      progress,
+      message,
+      complete
+    });
+  } catch (err) {
+    console.warn('sendProgressUpdate failed:', err);
+  }
 }
 
 // Update the action click handler to ensure connection before execution
 chrome.action.onClicked.addListener(async (tab) => {
+  await handleActionClick(tab, currentScanFilter);
+});
+
+async function initiateScanForActiveTab(filterChoice) {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab) await handleActionClick(tab, filterChoice);
+    else console.warn('No active tab for scan.');
+  } catch (err) {
+    console.error('initiateScanForActiveTab failed:', err);
+  }
+}
+
+async function handleActionClick(tab, filterChoice) {
   try {
     const url = tab.url || '';
-    if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') ||
-      url.startsWith('about:') || url.startsWith('edge://')) {
+    if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') || url.startsWith('about:') || url.startsWith('edge://')) {
       console.warn('Cannot run on this page type:', url);
       return;
     }
-
-    // Collect selection info from all accessible frames (longest selection wins)
-    chrome.scripting.executeScript({
+    const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true },
       func: () => {
         try {
@@ -1455,309 +1581,198 @@ chrome.action.onClicked.addListener(async (tab) => {
               frameUrl: location.href
             };
           }
-        } catch (e) {
-          // ignore frame errors
+        } catch {
+          /* ignore frame errors */
         }
         return null;
       }
-    }).then(results => {
-      if (!results || !Array.isArray(results)) {
-        showNotification(tab.id, 'No selection found.', 'warning');
-        return;
-      }
-      // Pick longest non-null selection
-      const candidates = results.map(r => r.result).filter(r => r && r.text && r.text.trim());
-      if (candidates.length === 0) {
-        showNotification(tab.id, 'Please select text before running license check.', 'warning');
-        return;
-      }
-      const best = candidates.reduce((a, b) => (b.text.length > a.text.length ? b : a));
-
-      // Send single message to existing handler (adds iframe metadata for future use)
-      // Directly initiate processing instead of round-trip messaging
-      originTabId = tab.id;
-      // Ensure content script/UI is present before processing (attempt a lightweight showUI message)
-      sendMessageToTab(tab.id, { action: 'showUI' })
-        .catch(() => Promise.resolve()) // ignore; injection fallback happens in sendMessageToTab
-        .finally(() => {
-          processLicenseCheck(best.text);
-        });
-    }).catch(err => {
-      console.error('Selection collection error:', err);
-      showNotification(tab.id, 'Error gathering selection: ' + (err.message || 'Unknown error'), 'error');
     });
-  } catch (err) {
-    console.error('Error handling action click:', err);
-  }
-});
-
-// Extension installation handler
-chrome.runtime.onInstalled.addListener(async (details) => {
-  console.log(`Extension ${details.reason}ed.`);
-
-  // On fresh install or update, preload the database
-  if (details.reason === 'install' || details.reason === 'update') {
-    await preloadLicenseDatabase();
-    // Setup periodic updates
-    setupPeriodicUpdates();
-  }
-});
-
-// Also setup updates on browser startup
-chrome.runtime.onStartup.addListener(() => {
-  setupPeriodicUpdates();
-});
-
-// Check if database update is needed (every two weeks)
-async function isUpdateNeeded() {
-  try {
-    const db = await openDatabase();
-
-    return new Promise((resolve) => {
-      const transaction = db.transaction(['status'], 'readonly');
-      const store = transaction.objectStore('status');
-      const request = store.get('last_update');
-
-      request.onsuccess = (event) => {
-        const result = event.target.result;
-
-        if (!result || !result.timestamp) {
-          // No timestamp found, update needed
-          resolve(true);
-          return;
-        }
-
-        const lastUpdateTime = new Date(result.timestamp).getTime();
-        const currentTime = new Date().getTime();
-        const twoWeeksInMs = CONFIG.cache.updateIntervalMs;
-
-        // Check if two weeks have passed since last update
-        resolve(currentTime - lastUpdateTime > twoWeeksInMs);
-      };
-
-      request.onerror = () => {
-        console.error('Error checking last update timestamp');
-        // If there's an error, assume update is needed
-        resolve(true);
-      };
-    });
-  } catch (error) {
-    console.error('Error checking if update is needed:', error);
-    return true; // On error, assume update is needed
-  }
-}
-
-// Record the timestamp of the current update
-async function recordUpdateTimestamp() {
-  try {
-    const db = await openDatabase();
-
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction(['status'], 'readwrite');
-      const store = transaction.objectStore('status');
-      const request = store.put({
-        id: 'last_update',
-        timestamp: new Date().toISOString()
-      });
-
-      request.onsuccess = () => resolve(true);
-      request.onerror = (error) => reject(error);
-    });
-  } catch (error) {
-    console.error('Error recording update timestamp:', error);
-    return false;
-  }
-}
-
-// Check for database updates and update if needed
-async function checkForDatabaseUpdates() {
-  console.log('Checking if license database needs updating...');
-  const needsUpdate = await isUpdateNeeded();
-
-  if (needsUpdate) {
-    console.log('License database update needed. Starting update process...');
-
-    try {
-      // Set badge to indicate update in progress
-      updateBadge("orange");
-
-      // Fetch the license index to check for changes
-      const licenseList = await fetch('https://scancode-licensedb.aboutcode.org/index.json', {
-        cache: 'no-cache' // Force fresh content
-      }).then(response => response.json());
-
-      // Filter out deprecated licenses
-      const licenses = licenseList.filter(obj => !obj.is_deprecated);
-      console.log(`Found ${licenses.length} non-deprecated licenses during update check`);
-
-      // Store the updated index
-      const db = await openDatabase();
-      const metadataStore = db.transaction(['metadata'], 'readwrite')
-        .objectStore('metadata');
-      await new Promise((resolve, reject) => {
-        const request = metadataStore.put({ id: 'index', data: licenses });
-        request.onsuccess = () => resolve();
-        request.onerror = (error) => reject(error);
-      });
-
-      // Process licenses in batches (reusing logic from preloadLicenseDatabase)
-      const batchSize = 50;
-      const totalLicenses = licenses.length;
-      let processed = 0;
-      let failures = 0;
-
-      for (let i = 0; i < totalLicenses; i += batchSize) {
-        const batch = licenses.slice(i, Math.min(i + batchSize, totalLicenses));
-
-        // Process this batch
-        await Promise.all(batch.map(async (license) => {
-          try {
-            // Fetch with no-cache to get fresh content
-            const licenseUrl = `https://scancode-licensedb.aboutcode.org/${license.json}`;
-            const response = await fetch(licenseUrl, { cache: 'no-cache' });
-
-            if (!response.ok) {
-              throw new Error(`Failed to fetch ${licenseUrl}: ${response.statusText}`);
-            }
-
-            const licenseData = await response.json();
-            if (licenseData && licenseData.text) {
-              licenseData.text = normalizeLicenseText(licenseData.text);
-            }
-
-            // Store in licenses store
-            const licenseStore = db.transaction(['licenses'], 'readwrite')
-              .objectStore('licenses');
-            await new Promise((resolve, reject) => {
-              const request = licenseStore.put({ license_key: license.license_key, data: licenseData });
-              request.onsuccess = () => resolve();
-              request.onerror = (error) => reject(error);
-            });
-
-            // Pre-calculate and store the license text vector
-            if (licenseData.text) {
-              const vector = createTextVector(licenseData.text);
-              const vectorStore = db.transaction(['vectors'], 'readwrite')
-                .objectStore('vectors');
-              await new Promise((resolve, reject) => {
-                const request = vectorStore.put({ license_key: license.license_key, data: vector });
-                request.onsuccess = () => resolve();
-                request.onerror = (error) => reject(error);
-              });
-            }
-          } catch (error) {
-            failures++;
-            console.error(`Error processing license ${license.license_key} during update:`, error);
-          }
-        }));
-
-        // Update progress
-        processed += batch.length;
-        const percentComplete = Math.round((processed / totalLicenses) * 100);
-
-        // Update badge to show progress
-        chrome.action.setBadgeText({ text: `${percentComplete}%` });
-      }
-
-      // Record the update timestamp
-      await recordUpdateTimestamp();
-
-      console.log(`License database update completed. Processed ${processed} licenses with ${failures} failures.`);
-
-      // Reset badge
-      updateBadge("green");
-
-      return true;
-    } catch (error) {
-      console.error('Error updating license database:', error);
-      updateBadge("red");
-
-      // Reset badge after a delay
-      setTimeout(() => {
-        updateBadge("green");
-      }, 5000);
-
-      return false;
+    // Pick longest non-null selection
+    const candidates = results.map(r => r.result).filter(r => r && r.text && r.text.trim());
+    if (candidates.length === 0) {
+      showNotification(tab.id, 'Please select text before running license check.', 'warning');
+      return;
     }
-  } else {
-    console.log('License database is up to date');
-    return true;
+    const best = candidates.reduce((a, b) => (b.text.length > a.text.length ? b : a));
+
+    // Send single message to existing handler (adds iframe metadata for future use)
+    // Directly initiate processing instead of round-trip messaging
+    originTabId = tab.id;
+    sendMessageToTab(tab.id, { action: 'showUI' })
+      .catch(() => Promise.resolve())
+      .finally(() => {
+        processLicenseCheck(best.text, filterChoice);
+      });
+  } catch (err) {
+    console.error('Selection collection error:', err);
+    showNotification(tab.id, 'Error gathering selection: ' + (err.message || 'Unknown error'), 'error');
   }
 }
 
-function prepareDisplayText(text) {
-  return (text || '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\u00a0/g, ' ');
+// prime current filter from stored settings
+loadUserSettings().catch(err => console.warn('Settings preload failed:', err));
+
+async function ensureDatabaseReady(context = 'startup') {
+  try {
+    if (!(await isDatabaseInitialized())) {
+      console.log(`[LicenseMatch] Database missing (${context}); initializing.`);
+      await preloadLicenseDatabase();
+    }
+  } catch (err) {
+    console.error(`ensureDatabaseReady (${context}) failed:`, err);
+  }
 }
 
-/**
- * Produce a stable pretty HTML diff between two display texts, retrying if an early timeout
- * yields a degenerate full delete + full insert result.
- */
+ensureDatabaseReady('background-load');
+
+chrome.runtime.onInstalled.addListener(async (details) => {
+  console.log('[LicenseMatch] onInstalled:', details.reason);
+  await ensureDatabaseReady('onInstalled');
+});
+
+chrome.runtime.onStartup.addListener(async () => {
+  await ensureDatabaseReady('onStartup');
+});
+
 function generateStableDisplayDiff(licenseText, selectionText) {
   const originalTimeout = dmp.Diff_Timeout;
-  dmp.Diff_Timeout = Math.max(originalTimeout, 1.0); // give more time for UI diff
+  const displayA = prepareDisplayText(licenseText);
+  const displayB = prepareDisplayText(selectionText);
+  const canonA = canonicalizeForDiff(displayA);
+  const canonB = canonicalizeForDiff(displayB);
 
-  const a = prepareDisplayText(licenseText);
-  const b = prepareDisplayText(selectionText);
-
-  let diff = dmp.diff_main(a, b);
-  dmp.diff_cleanupSemantic(diff);
-
-  const degenerate = (
+  const isDegenerate = (diff, aLen, bLen) =>
+    Array.isArray(diff) &&
     diff.length === 2 &&
-    diff[0][0] === -1 &&
-    diff[1][0] === 1 &&
-    diff[0][1].length === a.length &&
-    diff[1][1].length === b.length
-  );
+    (Array.isArray(diff[0]) ? diff[0][0] : diff[0]?.op ?? diff[0]?.operation ?? diff[0]?.type ?? diff[0]?.[0]) === -1 &&
+    (Array.isArray(diff[1]) ? diff[1][0] : diff[1]?.op ?? diff[1]?.operation ?? diff[1]?.type ?? diff[1]?.[0]) === 1 &&
+    (Array.isArray(diff[0]) ? diff[0][1] : diff[0]?.text ?? diff[0]?.data ?? '')?.length === aLen &&
+    (Array.isArray(diff[1]) ? diff[1][1] : diff[1]?.text ?? diff[1]?.data ?? '')?.length === bLen;
 
-  if (degenerate) {
-    console.warn('[LicenseMatch][DisplayDiff] Degenerate diff; retry unlimited.');
-    dmp.Diff_Timeout = 0;
-    diff = dmp.diff_main(a, b);
+  const hasEqual = (diff) => Array.isArray(diff) && diff.some((d) => {
+    const op = Array.isArray(d) ? d[0] : d?.op ?? d?.operation ?? d?.type ?? d?.[0];
+    return op === 0;
+  });
+
+  const hasMeaningfulOverlap = (diff, lenA, lenB) => {
+    if (!Array.isArray(diff) || !diff.length) return false;
+    const sims = computeDiffSimilarities(diff, lenA, lenB);
+    return sims.containmentPct >= 3 || sims.avgPct >= 3;
+  };
+
+  const attemptDiff = () => {
+    const timeouts = [Math.max(originalTimeout || 0, 1), 4, 0];
+    const attempts = [
+      { a: displayA, b: displayB, mode: 'chars' },
+      { a: displayA, b: displayB, mode: 'lines' },
+      { a: canonA, b: canonB, mode: 'chars' },
+      { a: canonA, b: canonB, mode: 'lines' }
+    ];
+    for (const { a, b, mode } of attempts) {
+      for (const timeout of timeouts) {
+        try {
+          const diff = runDisplayDiff(a, b, timeout, mode);
+          if (isDegenerate(diff, a.length, b.length)) continue;
+          if (!hasEqual(diff) || !hasMeaningfulOverlap(diff, a.length, b.length)) continue;
+          return diff;
+        } catch (err) {
+          console.warn(`[LicenseMatch][DisplayDiff] mode=${mode} timeout=${timeout} failed`, err);
+        }
+      }
+    }
+    throw new Error('Diff attempts exhausted');
+  };
+
+  try {
+    const diffResult = attemptDiff();
+    return renderDiffHtml(diffResult);
+  } catch (err) {
+    console.warn('[LicenseMatch][DisplayDiff] Falling back to raw text:', err);
+    return (
+      '<div class="ldiff-error">Diff rendering failed. Showing full texts.</div>' +
+      `<div class="ldiff-preview"><strong>Selected text:</strong><pre>${escapeHtml(displayB)}</pre></div>` +
+      `<div class="ldiff-preview"><strong>Reference text:</strong><pre>${escapeHtml(displayA)}</pre></div>`
+    );
+  } finally {
+    dmp.Diff_Timeout = originalTimeout;
+  }
+}
+
+function runDisplayDiff(a, b, timeout, mode = 'lines') {
+  const previous = dmp.Diff_Timeout;
+  try {
+    dmp.Diff_Timeout = timeout;
+    let diff;
+    if (mode === 'lines') {
+      const { chars1, chars2, lineArray } = dmp.diff_linesToChars_(a, b);
+      diff = dmp.diff_main(chars1, chars2, false);
+      dmp.diff_charsToLines_(diff, lineArray);
+    } else {
+      diff = dmp.diff_main(a, b, false);
+    }
     dmp.diff_cleanupSemantic(diff);
-  }
-
-  dmp.Diff_Timeout = originalTimeout;
-  return dmp.diff_prettyHtml(diff);
-}
-
-function updateBadge(color){
-  switch(color) {
-    case "green":
-      chrome.action.setBadgeText({ text: 'Diff' });
-      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
-      break;
-    case "red":
-      chrome.action.setBadgeText({ text: 'Error' });
-      chrome.action.setBadgeBackgroundColor({ color: '#F44336' });
-      break;
-    case "orange":
-      chrome.action.setBadgeText({ text: 'Load' });
-      chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' });
-      break;
+    return diff;
+  } finally {
+    dmp.Diff_Timeout = previous;
   }
 }
 
-// Register alarm for periodic updates (on install/startup)
-function setupPeriodicUpdates() {
-  chrome.alarms.create('checkLicenseDbUpdates', {
-    periodInMinutes: 60 * 24 // Check daily, but only update if two weeks have passed
-  });
+function renderDiffHtml(diff) {
+  if (!Array.isArray(diff)) throw new Error('Invalid diff payload');
+  const normalizeEntry = (entry) => {
+    if (!entry) return null;
+    if (Array.isArray(entry)) return { op: entry[0], data: String(entry[1] ?? '') };
+    if (typeof entry === 'object') {
+      const op = entry.op ?? entry.operation ?? entry.type ?? entry[0];
+      const data = entry.text ?? entry.data ?? entry[1];
+      if (op === undefined || data === undefined) return null;
+      return { op, data: String(data) };
+    }
+    return null;
+  };
+  const sanitized = diff.map(normalizeEntry).filter(Boolean).map(({ op, data }) => [op, data]);
+  if (!sanitized.length) throw new Error('Empty diff after normalization');
 
-  // Also do an immediate check on startup
-  checkForDatabaseUpdates().catch(err => {
-    console.error('Error during startup update check:', err);
-  });
+  const escapeHtmlFragment = (str) => String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  const escapeWhitespace = (str) => escapeHtmlFragment(str)
+    .replace(/ /g, '&nbsp;')
+    .replace(/\t/g, '&nbsp;&nbsp;&nbsp;&nbsp;');
+  const opStyle = (op) => op === 1
+    ? 'background:#e6ffe6;'
+    : op === -1
+      ? 'background:#ffe6e6;text-decoration:line-through;'
+      : '';
+  const renderLeadingWhitespace = (op, chunk) => {
+    if (!chunk) return '';
+    const safe = escapeWhitespace(chunk);
+    if (op === 0) return safe;
+    return `<span class="ldiff-leading" style="${opStyle(op)}">${safe}</span>`;
+  };
+  const renderBody = (op, chunk) => {
+    if (!chunk) return '';
+    const safe = escapeHtmlFragment(chunk);
+    if (op === 1) return `<ins>${safe}</ins>`;
+    if (op === -1) return `<del>${safe}</del>`;
+    return `<span>${safe}</span>`;
+  };
+  const renderChunk = (op, text) => {
+    if (!text) return '';
+    const lines = text.split('\n');
+    const parts = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.replace(/^[ \t]+/, '');
+      if (trimmed.length) {
+        parts.push(renderBody(op, trimmed));
+      }
+      if (i < lines.length - 1) parts.push('<br>');
+    }
+    return parts.join('');
+  };
+
+  const html = sanitized.map(([op, data]) => renderChunk(op, data)).join('');
+  return `<div class="ldiff-output" id="outputdiv">${html}</div>`;
 }
-
-// Listen for alarms
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'checkLicenseDbUpdates') {
-    checkForDatabaseUpdates().catch(err => {
-      console.error('Error during scheduled update check:', err);
-    });
-  }
-});
