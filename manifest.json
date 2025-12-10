@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LicenseDB License Diff",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Compares and diffs selected text using AboutCode's ScanCode LicenseDB license list.",
   "permissions": [
     "activeTab",
