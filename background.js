@@ -53,9 +53,14 @@ let currentScanFilter = FILTER_OPTIONS.BOTH;
 function normalizeFilter(value) {
   return Object.values(FILTER_OPTIONS).includes(value) ? value : FILTER_OPTIONS.BOTH;
 }
-try { chrome.action.setPopup({ popup: 'popup.html' }); } catch (err) { console.warn('Popup attach failed:', err); }
+try {
+  chrome.action.setPopup({ popup: 'popup.html' });
+} catch (err) {
+  console.warn('Popup attach failed:', err);
+}
 
-let originTabId; // Store the ID of the tab that initiated the license check
+// Store the ID of the tab that initiated the license check
+let originTabId;
 const dmp = new DiffMatchPatch();
 // In-memory cache of license term-frequency vectors (populated on demand)
 let licenseVectorsCache = null; // { license_key: { word: freq, ... } }
@@ -65,13 +70,17 @@ const activeScans = new Set();
 
 // Database version - increment when structure changes
 const DB_VERSION = 2;
-
+let dbInstance = null;
+let dbOpenPromise = null;
 /**
  * Open (and create/upgrade) the IndexedDB database.
  * @returns {Promise<IDBDatabase>}
  */
 function openDatabase() {
-  return new Promise((resolve, reject) => {
+  if (dbInstance) return Promise.resolve(dbInstance);
+  if (dbOpenPromise) return dbOpenPromise;
+
+  dbOpenPromise = new Promise((resolve, reject) => {
     const request = indexedDB.open('LicenseDB', DB_VERSION);
 
     request.onupgradeneeded = (event) => {
@@ -91,13 +100,23 @@ function openDatabase() {
     };
 
     request.onsuccess = (event) => {
-      resolve(event.target.result);
+      dbInstance = event.target.result;
+      dbInstance.onclose = () => { dbInstance = null; dbOpenPromise = null; };
+      dbInstance.onversionchange = () => {
+        dbInstance?.close();
+        dbInstance = null;
+        dbOpenPromise = null;
+      };
+      resolve(dbInstance);
     };
 
     request.onerror = (event) => {
+      dbOpenPromise = null;
       reject(`IndexedDB error: ${event.target.errorCode}`);
     };
   });
+
+  return dbOpenPromise;
 }
 
 /**
@@ -504,7 +523,7 @@ async function loadAllVectors() {
   return licenseVectorsCache;
 }
 
-// === Added caches for advanced similarity metrics ===
+// Added caches for advanced similarity metrics
 let docFreqCache = null;          // { term: documentFrequency }
 let totalDocsCache = 0;
 const licenseShingleCache = {};   // { license_key: Set<string> }
