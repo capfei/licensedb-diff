@@ -397,8 +397,8 @@ function canonicalizeForDiff(text) {
     .replace(/[‘’‚‛]/g, "'")
     .replace(/[\u2013\u2014]/g, '-')          // en/em dash -> hyphen
     .replace(/\u00a0/g, ' ')                  // non-breaking space
+    .replace(/\n+/g, ' ')                    // collapse newlines
     .replace(/[ \t]+/g, ' ')                  // collapse spaces/tabs
-    .replace(/\n{2,}/g, '\n')                 // collapse blank lines
     .trim()
     .toLowerCase();
 }
@@ -1736,43 +1736,41 @@ function renderDiffHtml(diff) {
   const escapeHtmlFragment = (str) => String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-  const escapeWhitespace = (str) => escapeHtmlFragment(str)
-    .replace(/ /g, '&nbsp;')
+    .replace(/>/g, '&gt;')
     .replace(/\t/g, '&nbsp;&nbsp;&nbsp;&nbsp;');
-  const opStyle = (op) => op === 1
-    ? 'background:#e6ffe6;'
-    : op === -1
-      ? 'background:#ffe6e6;text-decoration:line-through;'
-      : '';
-  const renderLeadingWhitespace = (op, chunk) => {
-    if (!chunk) return '';
-    const safe = escapeWhitespace(chunk);
-    if (op === 0) return safe;
-    return `<span class="ldiff-leading" style="${opStyle(op)}">${safe}</span>`;
+  const listLinePattern = /^\s*(?:\(?\d+\)|\d+[.)]|[a-zA-Z][.)]|[-*•])\s+/;
+  const shouldForceBreak = (text, newlineIdx, runLength) => {
+    if (runLength !== 1) return false;
+    const nextSlice = text.slice(newlineIdx + 1);
+    const nextLine = nextSlice.split('\n', 1)[0] || '';
+    return listLinePattern.test(nextLine);
+  };
+  const formatDiffText = (text) => {
+    if (!text) return '';
+    let out = '';
+    let lastIndex = 0;
+    text.replace(/\n+/g, (match, idx) => {
+      if (idx > lastIndex) out += escapeHtmlFragment(text.slice(lastIndex, idx));
+      out += match.length === 1
+        ? (shouldForceBreak(text, idx, match.length) ? '<br>' : ' ')
+        : '<br>'.repeat(match.length);
+      lastIndex = idx + match.length;
+      return match;
+    });
+    if (lastIndex < text.length) out += escapeHtmlFragment(text.slice(lastIndex));
+    return out;
   };
   const renderBody = (op, chunk) => {
     if (!chunk) return '';
-    const safe = escapeHtmlFragment(chunk);
-    if (op === 1) return `<ins>${safe}</ins>`;
-    if (op === -1) return `<del>${safe}</del>`;
-    return `<span>${safe}</span>`;
+    const formatted = formatDiffText(chunk);
+    const whitespaceOnly = !/\S/.test(chunk);
+    if (op === 1 && !whitespaceOnly) return `<ins>${formatted}</ins>`;
+    if (op === -1 && !whitespaceOnly) return `<del>${formatted}</del>`;
+    if (op === 0 && !whitespaceOnly) return `<span>${formatted}</span>`;
+    return `<span></span>`;
   };
-  const renderChunk = (op, text) => {
-    if (!text) return '';
-    const lines = text.split('\n');
-    const parts = [];
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.replace(/^[ \t]+/, '');
-      if (trimmed.length) {
-        parts.push(renderBody(op, trimmed));
-      }
-      if (i < lines.length - 1) parts.push('<br>');
-    }
-    return parts.join('');
-  };
-
-  const html = sanitized.map(([op, data]) => renderChunk(op, data)).join('');
+  const viewable = sanitized; // include deletions again
+  if (!viewable.length) throw new Error('Empty diff after filtering viewable segments');
+  const html = viewable.map(([op, data]) => renderBody(op, data)).join('');
   return `<div class="ldiff-output" id="outputdiv">${html}</div>`;
 }
