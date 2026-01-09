@@ -2,8 +2,6 @@
 'use strict';
 console.log('Background script loaded.');
 
-chrome.action.setBadgeText({ text: 'Diff' });
-
 import DiffMatchPatch from "./diff_match_patch.js";
 
 // configuration constants
@@ -59,8 +57,6 @@ try {
   console.warn('Popup attach failed:', err);
 }
 
-// Store the ID of the tab that initiated the license check
-let originTabId;
 const dmp = new DiffMatchPatch();
 // In-memory cache of license term-frequency vectors (populated on demand)
 let licenseVectorsCache = null; // { license_key: { word: freq, ... } }
@@ -1077,23 +1073,28 @@ async function fetchLicenses(text, sendProgress, options = {}) {
 }
 
 // Process a license check request
-async function processLicenseCheck(selectedText, scanFilter = FILTER_OPTIONS.BOTH) {
-  if (!selectedText || selectedText.trim().length === 0) {
-    showNotification(originTabId, 'Please select some text to compare with licenses.', 'warning');
+async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTIONS.BOTH) {
+  if (!tabId) {
+    console.error('processLicenseCheck called without a tab ID.');
     return;
   }
 
-  if (activeScans.has(originTabId)) {
-    showNotification(originTabId, 'Already processing a license check. Please wait...', 'info');
+  if (!selectedText || selectedText.trim().length === 0) {
+    showNotification(tabId, 'Please select some text to compare with licenses.', 'warning');
+    return;
+  }
+
+  if (activeScans.has(tabId)) {
+    showNotification(tabId, 'Already processing a license check. Please wait...', 'info');
     return;
   }
 
   // Mark this tab as having an active scan
-  activeScans.add(originTabId);
+  activeScans.add(tabId);
 
   try {
     // Make sure content script is available
-    const ready = await ensureContentScript(originTabId);
+    const ready = await ensureContentScript(tabId);
     if (!ready) {
       console.error('Content script not available after injection attempts.');
       return;
@@ -1101,18 +1102,18 @@ async function processLicenseCheck(selectedText, scanFilter = FILTER_OPTIONS.BOT
     // Show UI and clear previous results with retry
     for (const m of ['showUI', 'clearResults']) {
       try {
-        await sendMessageToTab(originTabId, { action: m });
+        await sendMessageToTab(tabId, { action: m });
       } catch (msgErr) {
         console.warn('Retrying message', m, 'after brief delay due to', msgErr.message);
         await new Promise(r => setTimeout(r, 100));
-        await sendMessageToTab(originTabId, { action: m });
+        await sendMessageToTab(tabId, { action: m });
       }
     }
 
     // Progress callback for reporting scan progress
     const sendProgress = async (progress) => {
       try {
-        await sendMessageToTab(originTabId, {
+        await sendMessageToTab(tabId, {
           action: 'progressUpdate',
           progress
         });
@@ -1125,14 +1126,19 @@ async function processLicenseCheck(selectedText, scanFilter = FILTER_OPTIONS.BOT
     const matches = await fetchLicenses(selectedText, sendProgress, { filter: normalizeFilter(scanFilter) });
 
     if (matches && matches.length > 0) {
+      matches.sort((a, b) => {
+        const aScore = Number.parseFloat(a?.charSimilarity ?? a?.score ?? 0) || 0;
+        const bScore = Number.parseFloat(b?.charSimilarity ?? b?.score ?? 0) || 0;
+        return bScore - aScore;
+      });
       console.log('Sending showResults with', matches.length, 'matches. Top license:', matches[0]?.license);
       // Report the matches to the content script
-      await sendMessageToTab(originTabId, {
+      await sendMessageToTab(tabId, {
         action: 'showResults',
         matches
       });
     } else {
-      await sendMessageToTab(originTabId, {
+      await sendMessageToTab(tabId, {
         action: 'showError',
         error: 'No significant license matches found.'
       });
@@ -1140,7 +1146,7 @@ async function processLicenseCheck(selectedText, scanFilter = FILTER_OPTIONS.BOT
   } catch (error) {
     console.error('Error processing license check:', error);
     try {
-      await sendMessageToTab(originTabId, {
+      await sendMessageToTab(tabId, {
         action: 'showError',
         error: error.message || 'An unknown error occurred'
       });
@@ -1149,7 +1155,7 @@ async function processLicenseCheck(selectedText, scanFilter = FILTER_OPTIONS.BOT
     }
   } finally {
     // Remove this tab from active scans
-    activeScans.delete(originTabId);
+    activeScans.delete(tabId);
   }
 }
 
@@ -1184,29 +1190,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'checkLicense') {
     const selectedText = message.text;
     const scanFilter = normalizeFilter(message.filter || currentScanFilter);
-    // Send an immediate response to keep the message port alive
-    sendResponse({ status: 'processing' });
+
+    const startProcessing = (tabId) => {
+      processLicenseCheck(tabId, selectedText, scanFilter)
+        .then(() => {
+          sendResponse({ status: 'complete' });
+        })
+        .catch((error) => {
+          console.error('processLicenseCheck failed:', error);
+          sendResponse({ status: 'error', error: error?.message || 'Unknown error' });
+        });
+    };
 
     // Store the tab ID that initiated the request
-    originTabId = sender.tab ? sender.tab.id : null;
+    const senderTabId = sender.tab ? sender.tab.id : null;
 
-    if (!originTabId) {
+    if (!senderTabId) {
       // If no tab ID is available (e.g., sent from popup), get the current active tab
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (chrome.runtime.lastError || !tabs || tabs.length === 0) {
-          console.error('Error getting active tab:', chrome.runtime.lastError ?
-            chrome.runtime.lastError.message : 'No active tabs found');
+          const errMsg = chrome.runtime.lastError ? chrome.runtime.lastError.message : 'No active tabs found';
+          console.error('Error getting active tab:', errMsg);
+          sendResponse({ status: 'error', error: errMsg });
           return;
         }
 
-        originTabId = tabs[0].id;
-        processLicenseCheck(selectedText, scanFilter);
+        startProcessing(tabs[0].id);
       });
     } else {
-      processLicenseCheck(selectedText, scanFilter);
+      startProcessing(senderTabId);
     }
 
-    return false; // Don't need to keep port open for asynchronous response
+    return true; // Keep the port open while processing completes
   } else if (message.action === 'noTextSelected') {
     // Handle no text selected
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -1616,11 +1631,10 @@ async function handleActionClick(tab, filterChoice) {
 
     // Send single message to existing handler (adds iframe metadata for future use)
     // Directly initiate processing instead of round-trip messaging
-    originTabId = tab.id;
     sendMessageToTab(tab.id, { action: 'showUI' })
       .catch(() => Promise.resolve())
       .finally(() => {
-        processLicenseCheck(best.text, filterChoice);
+        processLicenseCheck(tab.id, best.text, filterChoice);
       });
   } catch (err) {
     console.error('Selection collection error:', err);
@@ -1646,6 +1660,10 @@ ensureDatabaseReady('background-load');
 
 chrome.runtime.onInstalled.addListener(async (details) => {
   console.log('[LicenseMatch] onInstalled:', details.reason);
+  if (details.reason === 'update') {
+    // Reset badge
+    updateBadge("green");
+  }
   await ensureDatabaseReady('onInstalled');
 });
 
