@@ -412,21 +412,19 @@ function canonicalizeForDiff(text) {
     .replace(/[‘’‚‛]/g, "'")
     .replace(/[\u2013\u2014]/g, '-')          // en/em dash -> hyphen
     .replace(/\u00a0/g, ' ')                  // non-breaking space
-    .replace(/\n+/g, ' ')                    // collapse newlines
+    //.replace(/\n+/g, ' ')                    // collapse newlines
     .replace(/[ \t]+/g, ' ')                  // collapse spaces/tabs
     .trim()
-    .toLowerCase();
+    //.toLowerCase();
 }
 
-// Prepare text for visual diff (light cleanup, keep original casing)
+// Prepare text for visual diff display
 function prepareDisplayText(text) {
   if (!text) return '';
   return String(text)
     .replace(/\r\n/g, '\n')
-    .replace(/\u00a0/g, ' ')
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+    .replace(/\r/g, '\n')
+    .replace(/\u00a0/g, ' ');
 }
 
 function computeDiffSimilarities(diff, lenA, lenB) {
@@ -1675,6 +1673,8 @@ function generateStableDisplayDiff(licenseText, selectionText) {
   const originalTimeout = dmp.Diff_Timeout;
   const displayA = prepareDisplayText(licenseText);
   const displayB = prepareDisplayText(selectionText);
+
+  // Keep canonical only for "do we have overlap" checks; do NOT use it as a display-diff source.
   const canonA = canonicalizeForDiff(displayA);
   const canonB = canonicalizeForDiff(displayB);
 
@@ -1700,17 +1700,20 @@ function generateStableDisplayDiff(licenseText, selectionText) {
   const attemptDiff = () => {
     const timeouts = [Math.max(originalTimeout || 0, 1), 4, 0];
     const attempts = [
-      { a: displayA, b: displayB, mode: 'chars' },
-      { a: displayA, b: displayB, mode: 'lines' },
+      //{ a: displayA, b: displayB, mode: 'lines' },
+      //{ a: displayA, b: displayB, mode: 'chars' },
       { a: canonA, b: canonB, mode: 'chars' },
       { a: canonA, b: canonB, mode: 'lines' }
     ];
+
     for (const { a, b, mode } of attempts) {
       for (const timeout of timeouts) {
         try {
           const diff = runDisplayDiff(a, b, timeout, mode);
           if (isDegenerate(diff, a.length, b.length)) continue;
-          if (!hasEqual(diff) || !hasMeaningfulOverlap(diff, a.length, b.length)) continue;
+          if (!hasEqual(diff)) continue;
+          if (!hasMeaningfulOverlap(diff, canonA.length, canonB.length)) continue;
+
           return diff;
         } catch (err) {
           console.warn(`[LicenseMatch][DisplayDiff] mode=${mode} timeout=${timeout} failed`, err);
@@ -1774,40 +1777,17 @@ function renderDiffHtml(diff) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/\t/g, '&nbsp;&nbsp;&nbsp;&nbsp;');
-  const listLinePattern = /^\s*(?:\(?\d+\)|\d+[.)]|[a-zA-Z][.)]|[-*•])\s+/;
-  const shouldForceBreak = (text, newlineIdx, runLength) => {
-    if (runLength !== 1) return false;
-    const nextSlice = text.slice(newlineIdx + 1);
-    const nextLine = nextSlice.split('\n', 1)[0] || '';
-    return listLinePattern.test(nextLine);
-  };
-  const formatDiffText = (text) => {
-    if (!text) return '';
-    let out = '';
-    let lastIndex = 0;
-    text.replace(/\n+/g, (match, idx) => {
-      if (idx > lastIndex) out += escapeHtmlFragment(text.slice(lastIndex, idx));
-      out += match.length === 1
-        ? (shouldForceBreak(text, idx, match.length) ? '<br>' : ' ')
-        : '<br>'.repeat(match.length);
-      lastIndex = idx + match.length;
-      return match;
-    });
-    if (lastIndex < text.length) out += escapeHtmlFragment(text.slice(lastIndex));
-    return out;
-  };
+    .replace(/\t/g, '    ');
+
+  const formatDiffText = (text) => escapeHtmlFragment(text);
+
   const renderBody = (op, chunk) => {
-    if (!chunk) return '';
-    const formatted = formatDiffText(chunk);
-    const whitespaceOnly = !/\S/.test(chunk);
-    if (op === 1 && !whitespaceOnly) return `<ins>${formatted}</ins>`;
-    if (op === -1 && !whitespaceOnly) return `<del>${formatted}</del>`;
-    if (op === 0 && !whitespaceOnly) return `<span>${formatted}</span>`;
-    return `<span></span>`;
+    const formatted = formatDiffText(chunk ?? '');
+    if (op === 1) return `<ins>${formatted}</ins>`;
+    if (op === -1) return `<del>${formatted}</del>`;
+    return `<span>${formatted}</span>`;
   };
-  const viewable = sanitized; // include deletions again
-  if (!viewable.length) throw new Error('Empty diff after filtering viewable segments');
-  const html = viewable.map(([op, data]) => renderBody(op, data)).join('');
-  return `<div class="ldiff-output" id="outputdiv">${html}</div>`;
+
+  const html = sanitized.map(([op, data]) => renderBody(op, data)).join('');
+  return `<pre class="ldiff-output" id="outputdiv">${html}</pre>`;
 }
