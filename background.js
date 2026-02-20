@@ -43,7 +43,8 @@ function updateBadge(color) {
       chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' });
       break;
     default:
-      chrome.action.setBadgeText({ text: '' });
+      chrome.action.setBadgeText({ text: 'Diff' });
+      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
   }
 }
 const FILTER_OPTIONS = Object.freeze({ LICENSES: 'licenses', EXCEPTIONS: 'exceptions', BOTH: 'both' });
@@ -1674,6 +1675,17 @@ function generateStableDisplayDiff(licenseText, selectionText) {
   const displayA = prepareDisplayText(licenseText);
   const displayB = prepareDisplayText(selectionText);
 
+  const normalizeForParagraphDiff = (value) => String(value ?? '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/([^\n])[ \t]*\n[ \t]*(?=[^\n])/g, '$1 ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  const paraA = normalizeForParagraphDiff(displayA);
+  const paraB = normalizeForParagraphDiff(displayB);
+
   // Keep canonical only for "do we have overlap" checks; do NOT use it as a display-diff source.
   const canonA = canonicalizeForDiff(displayA);
   const canonB = canonicalizeForDiff(displayB);
@@ -1697,14 +1709,57 @@ function generateStableDisplayDiff(licenseText, selectionText) {
     return sims.containmentPct >= 3 || sims.avgPct >= 3;
   };
 
+  const evaluateDiffQuality = (diff) => {
+    if (!Array.isArray(diff) || !diff.length) return -Infinity;
+    let equalChars = 0;
+    let replacementPairs = 0;
+    let largeReplacementPairs = 0;
+
+    const toTuple = (entry) => {
+      if (!entry) return null;
+      if (Array.isArray(entry)) return [entry[0], String(entry[1] ?? '')];
+      if (typeof entry === 'object') {
+        const op = entry.op ?? entry.operation ?? entry.type ?? entry[0];
+        const data = entry.text ?? entry.data ?? entry[1];
+        if (op === undefined) return null;
+        return [op, String(data ?? '')];
+      }
+      return null;
+    };
+
+    for (let i = 0; i < diff.length; i++) {
+      const current = toTuple(diff[i]);
+      if (!current) continue;
+      const [op, data] = current;
+      if (op === 0) equalChars += data.length;
+
+      const next = toTuple(diff[i + 1]);
+      if (!next) continue;
+      const [nextOp, nextData] = next;
+      const isReplacement =
+        (op === -1 && nextOp === 1) ||
+        (op === 1 && nextOp === -1);
+      if (!isReplacement) continue;
+      replacementPairs++;
+      if ((data.length + nextData.length) > 300) largeReplacementPairs++;
+    }
+
+    return equalChars - (replacementPairs * 120) - (largeReplacementPairs * 280);
+  };
+
   const attemptDiff = () => {
     const timeouts = [Math.max(originalTimeout || 0, 1), 4, 0];
     const attempts = [
-      //{ a: displayA, b: displayB, mode: 'lines' },
-      //{ a: displayA, b: displayB, mode: 'chars' },
+      { a: paraA, b: paraB, mode: 'chars' },
+      { a: paraA, b: paraB, mode: 'lines' },
+      { a: displayA, b: displayB, mode: 'chars' },
+      { a: displayA, b: displayB, mode: 'lines' },
       { a: canonA, b: canonB, mode: 'chars' },
       { a: canonA, b: canonB, mode: 'lines' }
     ];
+
+    let best = null;
+    let bestScore = -Infinity;
 
     for (const { a, b, mode } of attempts) {
       for (const timeout of timeouts) {
@@ -1712,14 +1767,20 @@ function generateStableDisplayDiff(licenseText, selectionText) {
           const diff = runDisplayDiff(a, b, timeout, mode);
           if (isDegenerate(diff, a.length, b.length)) continue;
           if (!hasEqual(diff)) continue;
-          if (!hasMeaningfulOverlap(diff, canonA.length, canonB.length)) continue;
+          if (!hasMeaningfulOverlap(diff, a.length, b.length)) continue;
 
-          return diff;
+          const score = evaluateDiffQuality(diff);
+          if (score > bestScore) {
+            best = diff;
+            bestScore = score;
+          }
         } catch (err) {
           console.warn(`[LicenseMatch][DisplayDiff] mode=${mode} timeout=${timeout} failed`, err);
         }
       }
     }
+
+    if (best) return best;
     throw new Error('Diff attempts exhausted');
   };
 
@@ -1751,10 +1812,56 @@ function runDisplayDiff(a, b, timeout, mode = 'lines') {
       diff = dmp.diff_main(a, b, false);
     }
     dmp.diff_cleanupSemantic(diff);
+    dmp.diff_cleanupEfficiency(diff);
+    diff = collapseWhitespaceOnlyReplacements(diff);
     return diff;
   } finally {
     dmp.Diff_Timeout = previous;
   }
+}
+
+function collapseWhitespaceOnlyReplacements(diff) {
+  if (!Array.isArray(diff) || diff.length < 2) return diff;
+
+  const normalizeEntry = (entry) => {
+    if (!entry) return null;
+    if (Array.isArray(entry)) return { op: entry[0], data: String(entry[1] ?? '') };
+    if (typeof entry === 'object') {
+      const op = entry.op ?? entry.operation ?? entry.type ?? entry[0];
+      const data = entry.text ?? entry.data ?? entry[1];
+      if (op === undefined) return null;
+      return { op, data: String(data ?? '') };
+    }
+    return null;
+  };
+
+  const normalizeWs = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
+  const output = [];
+
+  for (let i = 0; i < diff.length; i++) {
+    const current = normalizeEntry(diff[i]);
+    if (!current) continue;
+    const { op, data = '' } = current;
+    const next = normalizeEntry(diff[i + 1]);
+
+    if (next) {
+      const { op: nextOp, data: nextData = '' } = next;
+      const replacementPair =
+        (op === -1 && nextOp === 1) ||
+        (op === 1 && nextOp === -1);
+
+      if (replacementPair && normalizeWs(data) === normalizeWs(nextData)) {
+        const baseline = op === -1 ? data : nextData;
+        output.push([0, baseline]);
+        i++;
+        continue;
+      }
+    }
+
+    output.push([op, data]);
+  }
+
+  return output;
 }
 
 function renderDiffHtml(diff) {

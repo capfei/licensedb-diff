@@ -4,7 +4,9 @@
   background-color: #fff;
   top: 20px;
   right: 20px;
-  width: 50%;
+  width: fit-content;
+  min-width: 25%;
+  max-width: 50%;
   height: auto;
   max-height: 100%;  /* Fallback */
   max-height: -moz-available;
@@ -215,12 +217,12 @@
 }
 
 #license-diff-display .ldiff-output {
-  white-space: pre;
+  white-space: pre-wrap;
   tab-size: 4;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   margin: 0;
   word-break: normal;
-  overflow-wrap: normal;
+  overflow-wrap: break-word;
 }
 
 /* Custom scrollbar for the diff display */
