@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "LicenseDB License Diff",
   "version": "0.0.6.1",
-  "description": "Compares and diffs selected text using AboutCode's ScanCode LicenseDB license list.",
+  "description": "Compares and diffs selected text using AboutCode's ScanCode LicenseDB license list and SPDX License List.",
   "permissions": [
     "activeTab",
     "scripting",
@@ -11,32 +11,33 @@
     "storage"
   ],
   "host_permissions": [
-    "https://scancode-licensedb.aboutcode.org/*"
+    "https://scancode-licensedb.aboutcode.org/*",
+    "https://spdx.org/*"
   ],
   "background": {
-    "service_worker": "background.js",
+    "service_worker": "src/background/background.js",
     "type": "module"
   },
   "action": {
     "default_icon": {
-      "16": "images/icon-16.png",
-      "32": "images/icon-32.png",
-      "48": "images/icon-48.png",
-      "128": "images/icon-128.png"
+      "16": "src/assets/images/icon-16.png",
+      "32": "src/assets/images/icon-32.png",
+      "48": "src/assets/images/icon-48.png",
+      "128": "src/assets/images/icon-128.png"
     }
   },
-  "options_page": "options.html",
+  "options_page": "src/ui/options/options.html",
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "css": ["content.css"]
+      "js": ["src/content/content.js"],
+      "css": ["src/content/content.css"]
     }
   ],
   "icons": {
-    "16": "images/icon-16.png",
-    "48": "images/icon-48.png",
-    "128": "images/icon-128.png"
+    "16": "src/assets/images/icon-16.png",
+    "48": "src/assets/images/icon-48.png",
+    "128": "src/assets/images/icon-128.png"
   }
 }
 

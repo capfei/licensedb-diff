@@ -4,7 +4,7 @@ This repository incorporates material as listed below or described in the code.
 
 ## diff-patch-match
 
-Path: diff_match_patch.js
+File: diff_match_patch.js
 Source: https://github.com/google/diff-match-patch
 License: Apache-2.0
 
