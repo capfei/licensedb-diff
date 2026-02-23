@@ -15,7 +15,7 @@ document.addEventListener('DOMContentLoaded', async function() {
 
 // Defaults aligned with background CONFIG
 const DEFAULT_SETTINGS = {
-  maxResults: 10,
+  maxResults: 20,
   minSimilarityPct: 15
 };
 const DEFAULT_APPEARANCE = { theme: 'light' };
@@ -117,6 +117,7 @@ async function loadDatabaseInfo() {
       document.getElementById('last-update').textContent = formatDate(info.lastUpdate);
       document.getElementById('license-count').textContent = info.licenseCount || 'Not available';
       document.getElementById('licensedb-version').textContent = info.licenseDbVersion || 'Not available';
+      document.getElementById('spdx-version').textContent = info.spdxListVersion || 'Not available';
       
       const dbStatus = document.getElementById('db-status');
       if (info.isInitialized) {
@@ -132,6 +133,7 @@ async function loadDatabaseInfo() {
     document.getElementById('last-update').textContent = 'Error loading information';
     document.getElementById('license-count').textContent = 'Error';
     document.getElementById('licensedb-version').textContent = 'Error';
+    document.getElementById('spdx-version').textContent = 'Error';
     document.getElementById('db-status').textContent = 'Error';
   }
 }
@@ -164,7 +166,6 @@ async function refreshDatabase() {
           chrome.runtime.onMessage.removeListener(progressListener);
         }
       }
-      return true;
     });
     
     // Start the update
@@ -214,7 +215,6 @@ async function resetDatabase() {
             chrome.runtime.onMessage.removeListener(progressListener);
           }
         }
-        return true;
       });
       
       // Start the reset

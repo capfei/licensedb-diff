@@ -75,7 +75,6 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       try { el?.classList?.remove(cls); } catch { /* ignore */ }
     };
 
-    // Create a container for the UI
     const uiContainer = createEl('div');
     uiContainer.id = 'license-diff-ui';
 
@@ -90,12 +89,10 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       return true;
     };
 
-    // Toolbar row above status (theme selector on left, close button on right)
     const toolbar = createEl('div');
     toolbar.id = 'license-diff-toolbar';
     uiContainer.appendChild(toolbar);
 
-    // theme helpers
     async function getUserTheme() {
       return new Promise((resolve) => {
         try {
@@ -107,16 +104,17 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
         }
       });
     }
+
     function applyThemeClass(theme) {
       removeClass(uiContainer, 'ld-theme-light');
       removeClass(uiContainer, 'ld-theme-dark');
       addClass(uiContainer, theme === 'dark' ? 'ld-theme-dark' : 'ld-theme-light');
     }
+
     function saveTheme(theme) {
       try { chrome.storage?.sync?.set({ theme }); } catch { /* ignore */ }
     }
 
-    // Add a close button
     const closeButton = createEl('button');
     closeButton.className = 'license-diff-close';
     closeButton.innerText = '×';
@@ -125,17 +123,14 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     });
     toolbar.appendChild(closeButton);
 
-    // Create notifications container
     const notificationsContainer = createEl('div');
     notificationsContainer.id = 'license-diff-notifications';
     uiContainer.appendChild(notificationsContainer);
 
-    // Add a status message
     const status = createEl('div');
     status.id = 'license-diff-status';
     uiContainer.appendChild(status);
 
-    // Add a progress bar
     const progressBar = createEl('div');
     progressBar.id = 'license-diff-progress-container';
     const progressEl = createEl('div');
@@ -143,28 +138,23 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     progressBar.appendChild(progressEl);
     uiContainer.appendChild(progressBar);
 
-    // Add a link for matches
     const linkDisplay = createEl('div');
     linkDisplay.id = 'license-diff-url';
     setDisplay(linkDisplay, 'none');
 
-    // Dropdown for matches
     const dropdown = createEl('select');
     dropdown.id = 'license-diff-dropdown';
     setDisplay(dropdown, 'none');
     uiContainer.appendChild(dropdown);
     uiContainer.appendChild(linkDisplay);
 
-    // Add a container for the diff
     const diffContainer = createEl('div');
     diffContainer.id = 'license-diff-display';
     setDisplay(diffContainer, 'none');
     uiContainer.appendChild(diffContainer);
 
-    // Append the UI to the webpage
     ensureMounted();
 
-    // Store matches globally
     let matches = [];
 
     function prettyPercent(pStr) {
@@ -174,7 +164,10 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       return `${num.toFixed(2)}%`;
     }
 
-    // Function to show notifications that automatically disappear
+    const getSourceClass = (source) => (source === 'spdx' ? 'source-spdx' : 'source-licensedb');
+    const getSourceLabel = (source) => (source === 'spdx' ? 'SPDX' : 'ScanCode');
+
+
     function showNotification(message, type = 'info', duration = 5000) {
       ensureMounted();
 
@@ -184,13 +177,10 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
 
       notificationsContainer.appendChild(notification);
 
-      // Show UI if not already visible
       if ((uiContainer.style?.display || '') !== 'flex') setDisplay(uiContainer, 'flex');
 
-      // Scroll notification into view if needed
       try { notification.scrollIntoView?.({ behavior: 'smooth', block: 'center' }); } catch { /* ignore */ }
 
-      // Remove after duration
       setTimeout(() => {
         setStyleProp(notification, 'animation', 'fadeOut 0.3s ease-in-out');
         notification.addEventListener('animationend', () => {
@@ -201,7 +191,6 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       return notification;
     }
 
-    // Add theme control
     const themeRow = createEl('div');
     themeRow.id = 'license-diff-theme';
     const themeLabel = createEl('label');
@@ -215,23 +204,19 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     `;
     themeRow.appendChild(themeLabel);
     themeRow.appendChild(themeSelect);
-    // place to the left of the close button
     toolbar.insertBefore(themeRow, toolbar.firstChild);
 
-    // Apply theme on init and set the select value
     getUserTheme().then(theme => {
       applyThemeClass(theme);
       themeSelect.value = theme;
     });
 
-    // Apply and save immediately when user changes it
     themeSelect.addEventListener('change', () => {
       const theme = themeSelect.value === 'dark' ? 'dark' : 'light';
       applyThemeClass(theme);
       saveTheme(theme);
     });
 
-    // Also react if theme changes elsewhere (e.g., Options page)
     try {
       chrome.storage?.onChanged?.addListener((changes, area) => {
         if (area === 'sync' && changes.theme) {
@@ -242,7 +227,6 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       });
     } catch { /* ignore */ }
 
-    // Listen for messages from the background script
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         ensureMounted();
@@ -255,7 +239,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
         if (message.action === 'showUI') {
           getUserTheme().then(applyThemeClass);
           setDisplay(uiContainer, 'flex');
-          updateDiffSizing(); // NEW
+          updateDiffSizing();
           sendResponse({ success: true });
         } else if (message.action === 'clearResults') {
           safeClearHTML(dropdown);
@@ -267,7 +251,6 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
           setDisplay(diffContainer, 'none');
           safeClearHTML(diffContainer);
 
-          // Reset progress (guarded)
           if (progressEl) {
             removeClass(progressEl, 'animating');
             addClass(progressEl, 'no-transition');
@@ -276,7 +259,6 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
             removeClass(progressEl, 'no-transition');
           }
 
-          // (XML-safe) avoid innerText
           status.textContent = 'Starting license comparison...';
           matches = [];
 
@@ -299,29 +281,33 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
         } else if (message.action === 'showResults') {
           removeClass(progressEl, 'animating');
 
-          matches = message.matches;
+          matches = Array.isArray(message.matches) ? message.matches : [];
+          safeClearHTML(dropdown);
 
-          // Populate dropdown
           matches.forEach(m => {
-            // Build link with copy button for later display
-            m.link = `<a href="https://scancode-licensedb.aboutcode.org/${m.license}.html" target="_blank">${m.name}</a> 
-              <span class=\"spdx-container\">
-                <span class=\"spdx-id\">(${m.spdx})</span>
-                <button class=\"copy-spdx-button\" data-spdx=\"${m.spdx}\" title=\"Copy ID\">
-                  <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"9\" y=\"9\" width=\"13\" height=\"13\" rx=\"2\" ry=\"2\"></rect><path d=\"M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1\"></path></svg>
+            const matchKey = `${m.source || 'licensedb'}:${m.license}`;
+            m.matchKey = matchKey;
+            const targetUrl = m.link || `https://scancode-licensedb.aboutcode.org/${m.license}.html`;
+            const sourceLabel = getSourceLabel(m.source);
+            m.sourceLabel = sourceLabel;
+
+            m.link = `<a href="${targetUrl}" target="_blank">${m.name}</a>
+              <span class="source-badge ${getSourceClass(m.source)}">${sourceLabel}</span>
+              <span class="spdx-container">
+                <span class="spdx-id">(${m.spdx})</span>
+                <button class="copy-spdx-button" data-spdx="${m.spdx}" title="Copy ID">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                 </button>
               </span>`;
-            // Using bracketed label so it appears in native select
             const pct = prettyPercent(m.charSimilarity);
             const opt = createEl('option');
-            opt.value = m.license;
-            opt.textContent = pct ? `${m.license} (${pct} match)` : m.license;
+            opt.value = matchKey;
+              opt.textContent = pct ? `${m.license} • ${pct} • ${sourceLabel}` : `${m.license} • ${sourceLabel}`;
             dropdown.appendChild(opt);
           });
 
-          // Change handler
           dropdown.onchange = () => {
-            const sel = matches.find(m => m.license === dropdown.value);
+            const sel = matches.find(m => m.matchKey === dropdown.value);
             if (!sel) return;
 
             safeSetHTML(linkDisplay, sel.link);
@@ -337,7 +323,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
             }
 
             safeSetHTML(diffContainer, sel.diff);
-            updateDiffSizing(); // NEW (adjust to new content)
+            updateDiffSizing();
             setupCopyButtons();
           };
 
@@ -351,12 +337,10 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
           }
 
           status.textContent = 'Comparison complete!';
-          updateDiffSizing(); // NEW (after making it visible)
+          updateDiffSizing();
           sendResponse({ success: true });
         } else if (message.action === 'showError') {
           removeClass(progressEl, 'animating');
-
-          // (XML-safe) avoid innerText
           status.textContent = `Error: ${message.error}`;
           showNotification(`Error: ${message.error}`, 'error');
           sendResponse({ success: true });
@@ -370,11 +354,8 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       } catch (err) {
         try { sendResponse({ success: false, error: String(err?.message || err) }); } catch { /* ignore */ }
       }
-
-      // All branches respond synchronously.
     });
 
-    // Function to setup copy buttons
     function setupCopyButtons() {
       document.querySelectorAll('.copy-spdx-button').forEach(button => {
         button.addEventListener('click', function(e) {
@@ -383,16 +364,10 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
 
           const spdxId = this.getAttribute('data-spdx');
 
-          // Copy to clipboard
           navigator.clipboard.writeText(spdxId)
             .then(() => {
-              // Visual feedback - Change button appearance temporarily
               this.classList.add('copied');
-
-              // Show notification
-              const notification = showNotification(`Copied "${spdxId}" to clipboard`, 'success', 2000);
-
-              // Reset button after a short delay
+              showNotification(`Copied "${spdxId}" to clipboard`, 'success', 2000);
               setTimeout(() => {
                 this.classList.remove('copied');
               }, 1500);
@@ -405,7 +380,6 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       });
     }
 
-    // After diff container is created, add a sizing helper (expand/shrink to content, bounded by viewport)
     const updateDiffSizing = () => {
       try {
         ensureMounted();
@@ -426,7 +400,6 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
 
     window.addEventListener('resize', updateDiffSizing, { passive: true });
 
-    // Add CSS for animations
     const styleId = 'license-diff-inline-style';
     const existingStyle = document.getElementById?.(styleId);
     const style = existingStyle || createEl('style');
@@ -445,7 +418,6 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     `;
     if (!existingStyle) (document.head || document.documentElement).appendChild(style);
 
-    // Notify the background script that the content script is ready
     try {
       chrome.runtime.sendMessage({ action: 'contentScriptReady' });
     } catch (err) {

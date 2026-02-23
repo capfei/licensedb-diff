@@ -133,10 +133,10 @@
   width: 100% !important;
   max-width: none !important;
   min-width: 0 !important;
-  flex: 0 0 auto !important;  /* defeat global flex rules */
-  align-self: stretch !important;  /* defeat grid/flex auto sizing */
+  flex: 0 0 auto !important;
+  align-self: stretch !important;
   margin-bottom: 16px;
-  padding: 10px 36px 12px 12px !important;  /* extra bottom pad helps on Windows */
+  padding: 10px 36px 12px 12px !important;
   border-radius: 8px;
   border: 1px solid rgba(0, 0, 0, 0.15);
   font-family: inherit;
@@ -149,7 +149,7 @@
   text-overflow: ellipsis !important;
   overflow: hidden !important;
   color: #333 !important;
-  -webkit-text-fill-color: #333 !important;  /* Safari/Chrome fix */
+  -webkit-text-fill-color: #333 !important;
   text-indent: 0 !important;
   letter-spacing: normal !important;
   word-spacing: normal !important;
@@ -166,7 +166,6 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
-/* Option text visibility (some sites/theme overrides) */
 #license-diff-dropdown option {
   font-size: 14px !important;
   line-height: 1.4 !important;
@@ -346,6 +345,30 @@
   position: static;
 }
 
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  vertical-align: middle;
+}
+
+.source-badge.source-licensedb {
+  background-color: rgba(76, 175, 80, 0.16);
+  color: #2d682d;
+  border: 1px solid rgba(76, 175, 80, 0.35);
+}
+
+.source-badge.source-spdx {
+  background-color: rgba(33, 150, 243, 0.15);
+  color: #1565c0;
+  border: 1px solid rgba(33, 150, 243, 0.35);
+}
+
 /* Theme control row */
 #license-diff-theme {
   display: flex;
@@ -408,6 +431,18 @@
 #license-diff-ui.ld-theme-light #license-diff-url a:hover {
   color: #2d682d !important;
   border-bottom: 1px dotted #2d682d !important;
+}
+
+#license-diff-ui.ld-theme-light .source-badge.source-licensedb {
+  background-color: rgba(76, 175, 80, 0.16) !important;
+  color: #2d682d !important;
+  border-color: rgba(76, 175, 80, 0.35) !important;
+}
+
+#license-diff-ui.ld-theme-light .source-badge.source-spdx {
+  background-color: rgba(33, 150, 243, 0.15) !important;
+  color: #1565c0 !important;
+  border-color: rgba(33, 150, 243, 0.35) !important;
 }
 
 #license-diff-ui.ld-theme-light .license-diff-notification.info {
@@ -491,6 +526,18 @@
 
 #license-diff-ui.ld-theme-dark #license-diff-url a:hover {
   border-bottom: 1px solid #4493f8 !important;
+}
+
+#license-diff-ui.ld-theme-dark .source-badge.source-licensedb {
+  background-color: rgba(63, 185, 80, 0.2) !important;
+  color: #aff5b4 !important;
+  border-color: rgba(63, 185, 80, 0.45) !important;
+}
+
+#license-diff-ui.ld-theme-dark .source-badge.source-spdx {
+  background-color: rgba(68, 147, 248, 0.22) !important;
+  color: #cfe8ff !important;
+  border-color: rgba(68, 147, 248, 0.45) !important;
 }
 
 #license-diff-ui.ld-theme-dark #license-diff-progress-container {

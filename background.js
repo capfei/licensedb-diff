@@ -48,6 +48,11 @@ function updateBadge(color) {
   }
 }
 const FILTER_OPTIONS = Object.freeze({ LICENSES: 'licenses', EXCEPTIONS: 'exceptions', BOTH: 'both' });
+const SOURCES = Object.freeze({ LICENSEDB: 'licensedb', SPDX: 'spdx' });
+const SPDX_URLS = Object.freeze({
+  licenses: 'https://spdx.org/licenses/licenses.json',
+  exceptions: 'https://spdx.org/licenses/exceptions.json'
+});
 let currentScanFilter = FILTER_OPTIONS.BOTH;
 function normalizeFilter(value) {
   return Object.values(FILTER_OPTIONS).includes(value) ? value : FILTER_OPTIONS.BOTH;
@@ -66,7 +71,7 @@ let licenseVectorsCache = null; // { license_key: { word: freq, ... } }
 const activeScans = new Set();
 
 // Database version - increment when structure changes
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 let dbInstance = null;
 let dbOpenPromise = null;
 /**
@@ -93,6 +98,12 @@ function openDatabase() {
       }
       if (!db.objectStoreNames.contains('status')) {
         db.createObjectStore('status', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('spdx_entries')) {
+        db.createObjectStore('spdx_entries', { keyPath: 'entry_key' });
+      }
+      if (!db.objectStoreNames.contains('spdx_vectors')) {
+        db.createObjectStore('spdx_vectors', { keyPath: 'entry_key' });
       }
     };
 
@@ -167,12 +178,185 @@ async function markDatabaseInitialized() {
     return false;
   }
 }
+
+function makeSpdxEntryKey(kind, id) {
+  return `spdx:${kind}:${id}`;
+}
+
+function resolveSpdxDetailsUrl(detailsUrl) {
+  try {
+    return new URL(detailsUrl, 'https://spdx.org/licenses/').toString();
+  } catch {
+    return null;
+  }
+}
+
+async function getStoreRecord(storeName, key) {
+  try {
+    const db = await openDatabase();
+    const tx = db.transaction([storeName], 'readonly');
+    const store = tx.objectStore(storeName);
+    return await promisifyRequest(store.get(key));
+  } catch {
+    return null;
+  }
+}
+
+async function putStoreRecord(storeName, record) {
+  const db = await openDatabase();
+  const tx = db.transaction([storeName], 'readwrite');
+  const store = tx.objectStore(storeName);
+  return promisifyRequest(store.put(record));
+}
+
+async function getMetadataEntry(id) {
+  const record = await getStoreRecord('metadata', id);
+  return record?.data || null;
+}
+
+async function setMetadataEntry(id, data) {
+  await putStoreRecord('metadata', { id, data });
+}
+
+async function isSpdxInitialized() {
+  const record = await getStoreRecord('status', 'spdx_initialization');
+  return !!(record && record.completed === true);
+}
+
+async function markSpdxInitialized(versionInfo = {}) {
+  await putStoreRecord('status', {
+    id: 'spdx_initialization',
+    completed: true,
+    timestamp: new Date().toISOString(),
+    ...versionInfo
+  });
+}
+
+function extractSpdxText(kind, detail) {
+  const text = kind === 'exception'
+    ? (detail?.licenseExceptionText || detail?.licenseText || '')
+    : (detail?.licenseText || detail?.standardLicenseTemplate || '');
+  return normalizeLicenseText(text || '');
+}
+
+async function fetchSpdxIndexes(noCache = false) {
+  const fetchOptions = noCache ? { cache: 'no-cache' } : undefined;
+  const [licensesResp, exceptionsResp] = await Promise.all([
+    fetch(SPDX_URLS.licenses, fetchOptions),
+    fetch(SPDX_URLS.exceptions, fetchOptions)
+  ]);
+
+  if (!licensesResp.ok) throw new Error(`Failed to fetch SPDX licenses: ${licensesResp.statusText}`);
+  if (!exceptionsResp.ok) throw new Error(`Failed to fetch SPDX exceptions: ${exceptionsResp.statusText}`);
+
+  const [licensesJson, exceptionsJson] = await Promise.all([
+    licensesResp.json(),
+    exceptionsResp.json()
+  ]);
+
+  const licenses = (licensesJson?.licenses || []).filter(item => !item?.isDeprecatedLicenseId);
+  const exceptions = (exceptionsJson?.exceptions || []).filter(item => !item?.isDeprecatedLicenseId);
+
+  return {
+    licenses,
+    exceptions,
+    versionInfo: {
+      licensesVersion: licensesJson?.licenseListVersion || null,
+      exceptionsVersion: exceptionsJson?.licenseListVersion || null
+    }
+  };
+}
+
+async function syncSpdxDatabase({ noCache = false, progressStart = null, progressSpan = null } = {}) {
+  const { licenses, exceptions, versionInfo } = await fetchSpdxIndexes(noCache);
+
+  await setMetadataEntry('spdx_licenses_index', licenses);
+  await setMetadataEntry('spdx_exceptions_index', exceptions);
+
+  const entries = [
+    ...licenses.map(item => ({ kind: 'license', item })),
+    ...exceptions.map(item => ({ kind: 'exception', item }))
+  ];
+
+  const db = await openDatabase();
+  let processed = 0;
+  let failures = 0;
+  const batchSize = 50;
+
+  for (let i = 0; i < entries.length; i += batchSize) {
+    const batch = entries.slice(i, Math.min(i + batchSize, entries.length));
+    await Promise.all(batch.map(async ({ kind, item }) => {
+      const id = kind === 'exception' ? item.licenseExceptionId : item.licenseId;
+      if (!id) return;
+
+      try {
+        const detailsUrl = resolveSpdxDetailsUrl(item.detailsUrl);
+        if (!detailsUrl) throw new Error(`Invalid details URL for SPDX ${kind}: ${id}`);
+
+        const detailResp = await fetch(detailsUrl, noCache ? { cache: 'no-cache' } : undefined);
+        if (!detailResp.ok) throw new Error(`Failed to fetch SPDX ${kind} detail ${id}: ${detailResp.statusText}`);
+        const detailJson = await detailResp.json();
+
+        const text = extractSpdxText(kind, detailJson);
+        const entryKey = makeSpdxEntryKey(kind, id);
+        const data = {
+          source: SOURCES.SPDX,
+          kind,
+          id,
+          spdx: id,
+          name: item.name || detailJson?.name || id,
+          text,
+          detailsUrl,
+          reference: item.reference || detailJson?.reference || null,
+          seeAlso: item.seeAlso || detailJson?.seeAlso || []
+        };
+
+        const entryStore = db.transaction(['spdx_entries'], 'readwrite').objectStore('spdx_entries');
+        await promisifyRequest(entryStore.put({ entry_key: entryKey, data }));
+
+        if (text) {
+          const vector = createTextVector(text);
+          const vectorStore = db.transaction(['spdx_vectors'], 'readwrite').objectStore('spdx_vectors');
+          await promisifyRequest(vectorStore.put({ entry_key: entryKey, data: vector }));
+          licenseVectorsCache = null;
+          docFreqCache = null;
+        }
+      } catch (error) {
+        failures++;
+        console.error(`Error processing SPDX ${kind} ${id}:`, error);
+      }
+    }));
+
+    processed += batch.length;
+    if (progressStart !== null && progressSpan !== null) {
+      const pct = Math.round(progressStart + (processed / entries.length) * progressSpan);
+      sendProgressUpdate(pct, `Processing SPDX entries: ${processed}/${entries.length} (${failures} failures)`);
+      chrome.action.setBadgeText({ text: `${Math.min(99, pct)}%` });
+    }
+  }
+
+  await cacheSpdxListVersion(versionInfo);
+  await markSpdxInitialized(versionInfo);
+
+  console.log(`SPDX sync complete. Processed ${processed} entries with ${failures} failures.`);
+}
+
+async function ensureSpdxDataInitialized() {
+  const initialized = await isSpdxInitialized();
+  if (initialized) return true;
+
+  console.log('SPDX data not initialized. Starting sync...');
+  await syncSpdxDatabase({ noCache: false });
+  return true;
+}
+
 async function preloadLicenseDatabase() {
   try {
     // Check if already initialized
     const isInitialized = await isDatabaseInitialized();
     if (isInitialized) {
       console.log('License database already initialized');
+      await ensureSpdxDataInitialized();
       return true;
     }
 
@@ -243,6 +427,9 @@ async function preloadLicenseDatabase() {
 
     // Mark database as initialized
     await markDatabaseInitialized();
+
+    // Load SPDX licenses/exceptions as part of initial bootstrap
+    await syncSpdxDatabase({ noCache: false });
 
     // Record the update timestamp when initializing
     await recordUpdateTimestamp();
@@ -497,21 +684,27 @@ async function loadAllVectors() {
   licenseVectorsCache = {};
   try {
     const db = await openDatabase();
-    await new Promise((resolve) => {
-      const tx = db.transaction(['vectors'], 'readonly');
-      const store = tx.objectStore('vectors');
+    const loadStoreVectors = (storeName) => new Promise((resolve) => {
+      const tx = db.transaction([storeName], 'readonly');
+      const store = tx.objectStore(storeName);
       const request = store.openCursor();
       request.onsuccess = (e) => {
         const cursor = e.target.result;
         if (cursor) {
-          licenseVectorsCache[cursor.key] = cursor.value.data;
+          const key = cursor.key;
+          licenseVectorsCache[key] = cursor.value.data;
           cursor.continue();
         } else {
           resolve();
         }
       };
-      request.onerror = () => resolve(); // fail soft
+      request.onerror = () => resolve();
     });
+
+    await loadStoreVectors('vectors');
+    if (db.objectStoreNames.contains('spdx_vectors')) {
+      await loadStoreVectors('spdx_vectors');
+    }
   } catch (e) {
     console.warn('Vector preload skipped due to error:', e);
   }
@@ -615,6 +808,131 @@ async function loadUserSettings() {
   });
 }
 
+async function getCombinedScanIndex(scanFilter) {
+  const licenseDbIndex = await fetchWithCache(
+    'https://scancode-licensedb.aboutcode.org/index.json',
+    'index',
+    'metadata'
+  );
+
+  let spdxLicenses = await getMetadataEntry('spdx_licenses_index');
+  let spdxExceptions = await getMetadataEntry('spdx_exceptions_index');
+
+  if (!Array.isArray(spdxLicenses) || !Array.isArray(spdxExceptions)) {
+    await ensureSpdxDataInitialized().catch(err => console.warn('SPDX init during scan failed:', err));
+    spdxLicenses = await getMetadataEntry('spdx_licenses_index');
+    spdxExceptions = await getMetadataEntry('spdx_exceptions_index');
+  }
+
+  const fromLicenseDb = (Array.isArray(licenseDbIndex) ? licenseDbIndex : [])
+    .filter(l => !l?.is_deprecated)
+    .filter(l => {
+      if (scanFilter === FILTER_OPTIONS.LICENSES) return !l.is_exception;
+      if (scanFilter === FILTER_OPTIONS.EXCEPTIONS) return l.is_exception === true;
+      return true;
+    })
+    .map(l => ({
+      source: SOURCES.LICENSEDB,
+      key: l.license_key,
+      storeKey: l.license_key,
+      isException: !!l.is_exception,
+      spdx: l.spdx_license_key || l.license_key,
+      detailUrl: `https://scancode-licensedb.aboutcode.org/${l.json}`,
+      raw: l
+    }));
+
+  const fromSpdxLicenses = (Array.isArray(spdxLicenses) ? spdxLicenses : [])
+    .filter(l => !l?.isDeprecatedLicenseId)
+    .filter(() => scanFilter !== FILTER_OPTIONS.EXCEPTIONS)
+    .map(l => {
+      const id = l.licenseId;
+      return {
+        source: SOURCES.SPDX,
+        key: id,
+        storeKey: makeSpdxEntryKey('license', id),
+        isException: false,
+        spdx: id,
+        detailUrl: resolveSpdxDetailsUrl(l.detailsUrl),
+        raw: l
+      };
+    });
+
+  const fromSpdxExceptions = (Array.isArray(spdxExceptions) ? spdxExceptions : [])
+    .filter(e => !e?.isDeprecatedLicenseId)
+    .filter(() => scanFilter !== FILTER_OPTIONS.LICENSES)
+    .map(e => {
+      const id = e.licenseExceptionId;
+      return {
+        source: SOURCES.SPDX,
+        key: id,
+        storeKey: makeSpdxEntryKey('exception', id),
+        isException: true,
+        spdx: id,
+        detailUrl: resolveSpdxDetailsUrl(e.detailsUrl),
+        raw: e
+      };
+    });
+
+  return [...fromLicenseDb, ...fromSpdxLicenses, ...fromSpdxExceptions].filter(item => item.key);
+}
+
+async function loadScanEntryData(entry) {
+  if (entry.source === SOURCES.LICENSEDB) {
+    const data = await fetchWithCache(entry.detailUrl, entry.storeKey, 'licenses').catch(() => null);
+    if (!data) return null;
+    if (data.text) data.text = normalizeLicenseText(data.text);
+    return {
+      key: entry.storeKey,
+      license: entry.key,
+      name: data.name || entry.key,
+      spdx: entry.spdx || entry.key,
+      text: data.text || ''
+    };
+  }
+
+  const existing = await getStoreRecord('spdx_entries', entry.storeKey);
+  if (existing?.data?.text) {
+    return {
+      key: entry.storeKey,
+      license: entry.key,
+      name: existing.data.name || entry.key,
+      spdx: existing.data.spdx || entry.key,
+      text: normalizeLicenseText(existing.data.text)
+    };
+  }
+
+  const detailsUrl = entry.detailUrl;
+  if (!detailsUrl) return null;
+  const response = await fetch(detailsUrl);
+  if (!response.ok) return null;
+  const detailJson = await response.json();
+  const text = extractSpdxText(entry.isException ? 'exception' : 'license', detailJson);
+  const data = {
+    source: SOURCES.SPDX,
+    kind: entry.isException ? 'exception' : 'license',
+    id: entry.key,
+    spdx: entry.spdx || entry.key,
+    name: entry.raw?.name || detailJson?.name || entry.key,
+    text,
+    detailsUrl
+  };
+  await putStoreRecord('spdx_entries', { entry_key: entry.storeKey, data });
+  if (text) {
+    const vector = createTextVector(text);
+    await putStoreRecord('spdx_vectors', { entry_key: entry.storeKey, data: vector });
+    licenseVectorsCache = null;
+    docFreqCache = null;
+  }
+
+  return {
+    key: entry.storeKey,
+    license: entry.key,
+    name: data.name,
+    spdx: data.spdx,
+    text
+  };
+}
+
 /**
  * Main similarity pipeline: approximate prefilter then diff refinement.
  * Ensures up to CONFIG.scan.maxResults returned; fills remaining with lower scores if needed.
@@ -632,24 +950,12 @@ async function fetchLicenses(text, sendProgress, options = {}) {
   }
 
   try {
-    // Load metadata index (cached)
-    const licenseList = await fetchWithCache(
-      'https://scancode-licensedb.aboutcode.org/index.json',
-      'index',
-      'metadata'
-    );
-    const filteredLicenses = licenseList
-      .filter(l => !l.is_deprecated)
-      .filter(l => {
-        if (scanFilter === FILTER_OPTIONS.LICENSES) return !l.is_exception;
-        if (scanFilter === FILTER_OPTIONS.EXCEPTIONS) return l.is_exception === true;
-        return true;
-      });
-    if (!filteredLicenses.length) {
+    const combinedIndex = await getCombinedScanIndex(scanFilter);
+    if (!combinedIndex.length) {
       console.warn('[LicenseMatch] No entries match filter', scanFilter);
       return [];
     }
-    const licenses = filteredLicenses;
+    const licenses = combinedIndex;
 
     // User settings
     const userSettings = await loadUserSettings();
@@ -726,20 +1032,16 @@ async function fetchLicenses(text, sendProgress, options = {}) {
       const batch = licenses.slice(i, i + batchSize);
       const batchResults = await Promise.all(batch.map(async (lic) => {
         try {
-          const licData = await fetchWithCache(
-            `https://scancode-licensedb.aboutcode.org/${lic.json}`,
-            lic.license_key,
-            'licenses'
-          ).catch(() => null);
+          const licData = await loadScanEntryData(lic).catch(() => null);
           if (!licData || !licData.text) return null;
 
           const licenseTextNorm = normalizeLicenseText(licData.text);
           // Cache canonical once
           const canonLic = canonicalizeForDiff(licenseTextNorm);
-          let licenseVector = licenseVectorsCache[lic.license_key];
+          let licenseVector = licenseVectorsCache[licData.key];
           if (!licenseVector) {
             licenseVector = createTextVector(licenseTextNorm);
-            licenseVectorsCache[lic.license_key] = licenseVector;
+            licenseVectorsCache[licData.key] = licenseVector;
           }
 
         // Quick structural filter
@@ -765,10 +1067,10 @@ async function fetchLicenses(text, sendProgress, options = {}) {
         }
         let shingleJac = 0;
         if (selShingles.size) {
-          let licShingles = licenseShingleCache[lic.license_key];
+          let licShingles = licenseShingleCache[licData.key];
           if (!licShingles) {
             licShingles = buildShingles(licWords, 5);
-            licenseShingleCache[lic.license_key] = licShingles;
+            licenseShingleCache[licData.key] = licShingles;
           }
           if (licShingles.size) shingleJac = jaccard(selShingles, licShingles);
         }
@@ -807,9 +1109,11 @@ async function fetchLicenses(text, sendProgress, options = {}) {
         }
 
         return {
-          license: lic.license_key,
+          license: licData.license,
           name: licData.name,
-          spdx: lic.spdx_license_key,
+          spdx: licData.spdx,
+          source: lic.source,
+          cacheKey: licData.key,
           approxSimilarity: combined,
           rawApprox: approxPct,
           overlapCoeff: overlapCoeffVal,
@@ -850,17 +1154,13 @@ async function fetchLicenses(text, sendProgress, options = {}) {
       const overlapScores = [];
       for (const lic of licenses) {
         try {
-          let vec = licenseVectorsCache[lic.license_key];
+          const licData = await loadScanEntryData(lic).catch(() => null);
+          if (!licData || !licData.text) continue;
+          let vec = licenseVectorsCache[licData.key];
           if (!vec) {
-            const licData = await fetchWithCache(
-              `https://scancode-licensedb.aboutcode.org/${lic.json}`,
-              lic.license_key,
-              'licenses'
-            ).catch(() => null);
-            if (!licData || !licData.text) continue;
             const norm = normalizeLicenseText(licData.text);
             vec = createTextVector(norm);
-            licenseVectorsCache[lic.license_key] = vec;
+            licenseVectorsCache[licData.key] = vec;
           }
           const licKeys = Object.keys(vec);
           let overlapCount = 0;
@@ -869,23 +1169,19 @@ async function fetchLicenses(text, sendProgress, options = {}) {
           }
           if (!overlapCount) continue;
           const overlapCoeffVal = overlapCount / Math.min(textTokenSet.size, licKeys.length);
-          overlapScores.push({ lic, overlapCoeffVal, overlapCount });
+          overlapScores.push({ lic, licData, overlapCoeffVal, overlapCount });
         } catch { /* ignore */ }
       }
       overlapScores.sort((a, b) => b.overlapCoeffVal - a.overlapCoeffVal || b.overlapCount - a.overlapCount);
       for (const s of overlapScores.slice(0, 40)) {
         try {
-          const licData = await fetchWithCache(
-            `https://scancode-licensedb.aboutcode.org/${s.lic.json}`,
-            s.lic.license_key,
-            'licenses'
-          );
-          if (!licData || !licData.text) continue;
-          const norm = normalizeLicenseText(licData.text);
+          const norm = normalizeLicenseText(s.licData.text);
           approxCandidates.push({
-            license: s.lic.license_key,
-            name: licData.name,
-            spdx: s.lic.spdx_license_key,
+            license: s.licData.license,
+            name: s.licData.name,
+            spdx: s.licData.spdx,
+            source: s.lic.source,
+            cacheKey: s.licData.key,
             approxSimilarity: s.overlapCoeffVal * 100,
             licenseText: norm,
             overlapCoeff: s.overlapCoeffVal
@@ -989,6 +1285,7 @@ async function fetchLicenses(text, sendProgress, options = {}) {
               license: cand.license,
               name: cand.name,
               spdx: cand.spdx,
+              source: cand.source || SOURCES.LICENSEDB,
               charSimilarity: finalScore.toFixed(2),
               diff: displayDiffHtml,
               diffMetrics: {
@@ -997,7 +1294,9 @@ async function fetchLicenses(text, sendProgress, options = {}) {
                 jaccard: sims.jaccardPct.toFixed(2)
               },
               score: finalScore.toFixed(2),
-              link: `https://scancode-licensedb.aboutcode.org/${cand.license}.html`
+              link: (cand.source === SOURCES.SPDX)
+                ? `https://spdx.org/licenses/${cand.license}.html`
+                : `https://scancode-licensedb.aboutcode.org/${cand.license}.html`
             });
           }
         } catch (e) {
@@ -1292,22 +1591,37 @@ async function getDatabaseInfo() {
       const transaction = db.transaction(['licenses'], 'readonly');
       const store = transaction.objectStore('licenses');
       const countRequest = store.count();
-      licenseCount = await new Promise((resolve) => {
+      const licenseDbCount = await new Promise((resolve) => {
         countRequest.onsuccess = () => resolve(countRequest.result);
         countRequest.onerror = () => resolve(0);
       });
+
+      let spdxCount = 0;
+      if (db.objectStoreNames.contains('spdx_entries')) {
+        const spdxTx = db.transaction(['spdx_entries'], 'readonly');
+        const spdxStore = spdxTx.objectStore('spdx_entries');
+        const spdxCountRequest = spdxStore.count();
+        spdxCount = await new Promise((resolve) => {
+          spdxCountRequest.onsuccess = () => resolve(spdxCountRequest.result);
+          spdxCountRequest.onerror = () => resolve(0);
+        });
+      }
+
+      licenseCount = licenseDbCount + spdxCount;
     } catch (error) {
       console.error('Error getting license count:', error);
     }
 
-    // Get LicenseDB version from GitHub API
-    let licenseDbVersion = await getLicenseDbVersionFromGitHub();
+    // Get license list versions
+    let licenseDbVersion = await getLicenseDbVersion();
+    let spdxListVersion = await getSpdxListVersion();
 
     return {
       isInitialized,
       lastUpdate,
       licenseCount,
-      licenseDbVersion
+      licenseDbVersion,
+      spdxListVersion
     };
   } catch (error) {
     console.error('Error getting database info:', error);
@@ -1315,23 +1629,41 @@ async function getDatabaseInfo() {
   }
 }
 
-// Function to get LicenseDB version from GitHub API
-async function getLicenseDbVersionFromGitHub() {
+// Function to get LicenseDB list version
+async function getLicenseDbVersion() {
   try {
     const cached = await getCachedLicenseDbVersion();
     if (cached && cached.timestamp) {
       const ageMs = Date.now() - new Date(cached.timestamp).getTime();
       if (ageMs < 24 * 60 * 60 * 1000) return cached.version || null; // cache < 1 day
     }
-    // Simple heuristic: fetch index.json and derive a hash/length to act as a pseudo version
+    // Preferred: parse the user-facing footer text from index.html,
+    // e.g. "Generated with ScanCode toolkit 32.5.0 on 2026-01-22."
+    try {
+      const htmlResp = await fetch('https://scancode-licensedb.aboutcode.org/index.html', { cache: 'no-cache' });
+      if (htmlResp.ok) {
+        const html = await htmlResp.text();
+        const match = html.match(/Generated\s+with\s+ScanCode\s+toolkit\s+([0-9]+(?:\.[0-9]+)*)\s+on\s+(\d{4}-\d{2}-\d{2})/i);
+        if (match) {
+          const toolkitVersion = match[1];
+          const generatedDate = match[2];
+          const version = `ScanCode toolkit ${toolkitVersion} (${generatedDate})`;
+          await cacheLicenseDbVersion(version);
+          return version;
+        }
+      }
+    } catch (footerErr) {
+      console.warn('Could not parse ScanCode footer version:', footerErr?.message || footerErr);
+    }
+
+    // Fallback: derive a pseudo version from index.json content fingerprint
     const resp = await fetch('https://scancode-licensedb.aboutcode.org/index.json', { cache: 'no-cache' });
     if (!resp.ok) throw new Error('Failed to fetch license index for version');
     const text = await resp.text();
-    // lightweight hash
     let hash = 0; for (let i = 0; i < text.length; i++) { hash = (hash * 31 + text.charCodeAt(i)) >>> 0; }
-    const version = `idx-${hash}-${text.length}`;
-    await cacheLicenseDbVersion(version);
-    return version;
+    const fallbackVersion = `idx-${hash}-${text.length}`;
+    await cacheLicenseDbVersion(fallbackVersion);
+    return fallbackVersion;
   } catch (e) {
     console.warn('Could not determine LicenseDB version:', e.message || e);
     return null;
@@ -1359,6 +1691,68 @@ async function cacheLicenseDbVersion(version) {
     const tx = db.transaction(['status'], 'readwrite');
     const store = tx.objectStore('status');
     await promisifyRequest(store.put({ id: 'licensedb_version', version, timestamp: new Date().toISOString() }));
+  } catch (e) {
+    // non-fatal
+  }
+}
+
+// Function to get SPDX list version
+async function getSpdxListVersion() {
+  try {
+    const cached = await getCachedSpdxListVersion();
+    if (cached?.timestamp) {
+      const ageMs = Date.now() - new Date(cached.timestamp).getTime();
+      if (ageMs < 24 * 60 * 60 * 1000) return cached.version || null;
+    }
+
+    const { versionInfo } = await fetchSpdxIndexes(true);
+    await cacheSpdxListVersion(versionInfo);
+    const licensesVersion = versionInfo?.licensesVersion || null;
+    const exceptionsVersion = versionInfo?.exceptionsVersion || null;
+    if (licensesVersion && exceptionsVersion && licensesVersion !== exceptionsVersion) {
+      return `licenses:${licensesVersion} / exceptions:${exceptionsVersion}`;
+    }
+    return licensesVersion || exceptionsVersion || null;
+  } catch (e) {
+    console.warn('Could not determine SPDX list version:', e.message || e);
+    return null;
+  }
+}
+
+// Get the cached SPDX list version
+async function getCachedSpdxListVersion() {
+  try {
+    const db = await openDatabase();
+    const tx = db.transaction(['status'], 'readonly');
+    const store = tx.objectStore('status');
+    try {
+      return await promisifyRequest(store.get('spdx_list_version'));
+    } catch {
+      return null;
+    }
+  } catch (error) {
+    console.error('Error getting cached SPDX list version:', error);
+    return null;
+  }
+}
+
+async function cacheSpdxListVersion(versionInfo) {
+  try {
+    const db = await openDatabase();
+    const tx = db.transaction(['status'], 'readwrite');
+    const store = tx.objectStore('status');
+    const licensesVersion = versionInfo?.licensesVersion || null;
+    const exceptionsVersion = versionInfo?.exceptionsVersion || null;
+    const combined = licensesVersion && exceptionsVersion && licensesVersion !== exceptionsVersion
+      ? `licenses:${licensesVersion} / exceptions:${exceptionsVersion}`
+      : (licensesVersion || exceptionsVersion || null);
+    await promisifyRequest(store.put({
+      id: 'spdx_list_version',
+      version: combined,
+      licensesVersion,
+      exceptionsVersion,
+      timestamp: new Date().toISOString()
+    }));
   } catch (e) {
     // non-fatal
   }
@@ -1461,15 +1855,20 @@ async function forceUpdateDatabase() {
       chrome.action.setBadgeText({ text: `${Math.round(percentComplete)}%` });
     }
 
+    // Update SPDX data as part of refresh
+    sendProgressUpdate(92, 'Updating SPDX lists...');
+    await syncSpdxDatabase({ noCache: true, progressStart: 92, progressSpan: 6 });
+
     // Record the update timestamp
-    sendProgressUpdate(95, 'Finalizing update...');
+    sendProgressUpdate(98, 'Finalizing update...');
     await recordUpdateTimestamp();
 
     // Set flag to indicate database is initialized
     await markDatabaseInitialized();
 
-    // Also update the licensedb version when forcing an update
-    await getLicenseDbVersionFromGitHub();
+    // Also update the license list versions when forcing an update
+    await getLicenseDbVersion();
+    await getSpdxListVersion();
 
     // Final success
     sendProgressUpdate(100, 'Database update complete', true);
@@ -1506,6 +1905,19 @@ async function resetDatabase() {
     // Send initial progress to options page
     sendProgressUpdate(0, 'Deleting database...');
 
+    // Close any open handles from this service worker before deletion.
+    // If a connection is left open, deleteDatabase can remain blocked.
+    try {
+      if (dbInstance) {
+        dbInstance.close();
+      }
+    } catch (closeErr) {
+      console.warn('Error while closing existing DB connection before reset:', closeErr);
+    } finally {
+      dbInstance = null;
+      dbOpenPromise = null;
+    }
+
     // Delete the database
     await new Promise((resolve, reject) => {
       const deleteRequest = indexedDB.deleteDatabase('LicenseDB');
@@ -1513,8 +1925,14 @@ async function resetDatabase() {
         console.log('Database deleted successfully');
         resolve();
       };
+      deleteRequest.onblocked = () => {
+        const error = new Error('Failed to delete database: deletion is blocked by another open tab or extension context.');
+        console.error(error);
+        reject(error);
+      };
       deleteRequest.onerror = () => {
-        const error = new Error('Failed to delete database');
+        const reason = deleteRequest.error?.message || 'unknown error';
+        const error = new Error(`Failed to delete database: ${reason}`);
         console.error(error);
         reject(error);
       };
@@ -1649,6 +2067,8 @@ async function ensureDatabaseReady(context = 'startup') {
     if (!(await isDatabaseInitialized())) {
       console.log(`[LicenseMatch] Database missing (${context}); initializing.`);
       await preloadLicenseDatabase();
+    } else {
+      await ensureSpdxDataInitialized();
     }
   } catch (err) {
     console.error(`ensureDatabaseReady (${context}) failed:`, err);
