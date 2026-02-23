@@ -105,6 +105,18 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       });
     }
 
+    async function getResultGroupingMode() {
+      return new Promise((resolve) => {
+        try {
+          chrome.storage?.sync?.get({ resultGrouping: 'overall' }, (items) => {
+            resolve(items?.resultGrouping === 'bySource' ? 'bySource' : 'overall');
+          });
+        } catch {
+          resolve('overall');
+        }
+      });
+    }
+
     function applyThemeClass(theme) {
       removeClass(uiContainer, 'ld-theme-light');
       removeClass(uiContainer, 'ld-theme-dark');
@@ -142,9 +154,27 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     linkDisplay.id = 'license-diff-url';
     setDisplay(linkDisplay, 'none');
 
+    let resultGroupingMode = 'overall';
+
+    const groupingRow = createEl('div');
+    groupingRow.id = 'license-diff-result-grouping';
+    setDisplay(groupingRow, 'none');
+    const groupingLabel = createEl('label');
+    groupingLabel.setAttribute('for', 'license-diff-result-grouping-select');
+    groupingLabel.textContent = 'Results grouping';
+    const groupingSelect = createEl('select');
+    groupingSelect.id = 'license-diff-result-grouping-select';
+    groupingSelect.innerHTML = `
+      <option value="overall">Top overall</option>
+      <option value="bySource">Group by source</option>
+    `;
+    groupingRow.appendChild(groupingLabel);
+    groupingRow.appendChild(groupingSelect);
+
     const dropdown = createEl('select');
     dropdown.id = 'license-diff-dropdown';
     setDisplay(dropdown, 'none');
+    uiContainer.appendChild(groupingRow);
     uiContainer.appendChild(dropdown);
     uiContainer.appendChild(linkDisplay);
 
@@ -156,6 +186,43 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     ensureMounted();
 
     let matches = [];
+
+    function renderMatchOptions(selectedMatchKey = null) {
+      safeClearHTML(dropdown);
+
+      const appendOption = (m, targetParent = dropdown) => {
+        const pct = prettyPercent(m.charSimilarity);
+        const opt = createEl('option');
+        opt.value = m.matchKey;
+        opt.textContent = pct
+          ? `${m.license} • ${pct} • ${m.sourceLabel || getSourceLabel(m.source)}`
+          : `${m.license} • ${m.sourceLabel || getSourceLabel(m.source)}`;
+        targetParent.appendChild(opt);
+      };
+
+      if (resultGroupingMode === 'bySource') {
+        ['licensedb', 'spdx'].forEach((sourceKey) => {
+          const sourceItems = matches.filter(m => (m.source || 'licensedb') === sourceKey);
+          if (!sourceItems.length) return;
+          const group = createEl('optgroup');
+          group.label = getSourceLabel(sourceKey);
+          sourceItems.forEach(m => appendOption(m, group));
+          dropdown.appendChild(group);
+        });
+      } else {
+        matches.forEach(m => appendOption(m, dropdown));
+      }
+
+      setDisplay(groupingRow, matches.length ? 'flex' : 'none');
+
+      if (matches.length) {
+        if (selectedMatchKey && matches.some(m => m.matchKey === selectedMatchKey)) {
+          dropdown.value = selectedMatchKey;
+        } else {
+          dropdown.selectedIndex = 0;
+        }
+      }
+    }
 
     function prettyPercent(pStr) {
       if (pStr === undefined || pStr === null || pStr === '') return '';
@@ -210,6 +277,10 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       applyThemeClass(theme);
       themeSelect.value = theme;
     });
+    getResultGroupingMode().then(mode => {
+      resultGroupingMode = mode;
+      groupingSelect.value = mode;
+    });
 
     themeSelect.addEventListener('change', () => {
       const theme = themeSelect.value === 'dark' ? 'dark' : 'light';
@@ -217,12 +288,33 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       saveTheme(theme);
     });
 
+    groupingSelect.addEventListener('change', () => {
+      resultGroupingMode = groupingSelect.value === 'bySource' ? 'bySource' : 'overall';
+      try { chrome.storage?.sync?.set({ resultGrouping: resultGroupingMode }); } catch { /* ignore */ }
+
+      if (!matches.length) return;
+      const selectedMatchKey = dropdown.value;
+      renderMatchOptions(selectedMatchKey);
+      dropdown.onchange?.();
+    });
+
     try {
       chrome.storage?.onChanged?.addListener((changes, area) => {
-        if (area === 'sync' && changes.theme) {
-          const theme = changes.theme.newValue === 'dark' ? 'dark' : 'light';
-          applyThemeClass(theme);
-          themeSelect.value = theme;
+        if (area === 'sync') {
+          if (changes.theme) {
+            const theme = changes.theme.newValue === 'dark' ? 'dark' : 'light';
+            applyThemeClass(theme);
+            themeSelect.value = theme;
+          }
+          if (changes.resultGrouping) {
+            resultGroupingMode = changes.resultGrouping.newValue === 'bySource' ? 'bySource' : 'overall';
+            groupingSelect.value = resultGroupingMode;
+            if (matches.length) {
+              const selectedMatchKey = dropdown.value;
+              renderMatchOptions(selectedMatchKey);
+              dropdown.onchange?.();
+            }
+          }
         }
       });
     } catch { /* ignore */ }
@@ -299,12 +391,9 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
                   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                 </button>
               </span>`;
-            const pct = prettyPercent(m.charSimilarity);
-            const opt = createEl('option');
-            opt.value = matchKey;
-              opt.textContent = pct ? `${m.license} • ${pct} • ${sourceLabel}` : `${m.license} • ${sourceLabel}`;
-            dropdown.appendChild(opt);
           });
+
+          renderMatchOptions();
 
           dropdown.onchange = () => {
             const sel = matches.find(m => m.matchKey === dropdown.value);
@@ -332,7 +421,6 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
           setDisplay(diffContainer, 'block');
 
           if (matches.length) {
-            dropdown.selectedIndex = 0;
             dropdown.onchange();
           }
 
