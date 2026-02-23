@@ -2,7 +2,7 @@
 'use strict';
 console.log('Background script loaded.');
 
-import DiffMatchPatch from "../lib/diff_match_patch.js";
+import "../lib/diff.js";
 import { SCAN_DEFAULTS, SCAN_ENDPOINTS } from "../shared/scan-defaults.js";
 import { UI_DEFAULTS, BADGE_STYLES, BADGE_DEFAULT } from "../shared/ui-defaults.js";
 
@@ -45,7 +45,7 @@ function normalizeFilter(value) {
 
 currentScanFilter = normalizeFilter(UI_DEFAULTS.scanFilter);
 
-const dmp = new DiffMatchPatch();
+const jsdiff = globalThis.Diff;
 // In-memory cache of license term-frequency vectors (populated on demand)
 let licenseVectorsCache = null; // { license_key: { word: freq, ... } }
 
@@ -603,9 +603,43 @@ function prepareDisplayText(text) {
     .replace(/\u00a0/g, ' ');
 }
 
+function normalizeDiffTuple(entry) {
+  if (!entry) return null;
+  if (Array.isArray(entry)) return [entry[0], String(entry[1] ?? '')];
+
+  if (typeof entry === 'object') {
+    if (typeof entry.added === 'boolean' || typeof entry.removed === 'boolean') {
+      const op = entry.added ? 1 : (entry.removed ? -1 : 0);
+      return [op, String(entry.value ?? '')];
+    }
+
+    const op = entry.op ?? entry.operation ?? entry.type ?? entry[0];
+    const data = entry.text ?? entry.data ?? entry.value ?? entry[1];
+    if (op === undefined || data === undefined) return null;
+    return [op, String(data)];
+  }
+
+  return null;
+}
+
+function normalizeDiffTuples(diff) {
+  if (!Array.isArray(diff)) return [];
+  return diff.map(normalizeDiffTuple).filter(Boolean);
+}
+
+function runCoreDiff(a, b, mode = 'chars') {
+  if (!jsdiff) throw new Error('jsdiff API is unavailable');
+  const result = mode === 'lines'
+    ? jsdiff.diffLines(a, b, { newlineIsToken: false, ignoreWhitespace: false })
+    : jsdiff.diffChars(a, b);
+  return normalizeDiffTuples(result);
+}
+
+
 function computeDiffSimilarities(diff, lenA, lenB) {
+  const tuples = normalizeDiffTuples(diff);
   let same = 0;
-  for (const tuple of diff) {
+  for (const tuple of tuples) {
     if (tuple[0] === 0 && tuple[1]) same += tuple[1].length;
   }
   const avgDenom = (lenA + lenB) / 2 || 1;
@@ -618,6 +652,47 @@ function computeDiffSimilarities(diff, lenA, lenB) {
   };
 }
 
+function tokenizeNormalizedText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function tokenLevenshteinDistance(tokensA, tokensB) {
+  const aLen = tokensA.length;
+  const bLen = tokensB.length;
+  if (!aLen) return bLen;
+  if (!bLen) return aLen;
+
+  let previous = new Array(bLen + 1);
+  let current = new Array(bLen + 1);
+
+  for (let j = 0; j <= bLen; j++) previous[j] = j;
+
+  for (let i = 1; i <= aLen; i++) {
+    current[0] = i;
+    const aToken = tokensA[i - 1];
+    for (let j = 1; j <= bLen; j++) {
+      const bToken = tokensB[j - 1];
+      const cost = aToken === bToken ? 0 : 1;
+      const del = previous[j] + 1;
+      const ins = current[j - 1] + 1;
+      const sub = previous[j - 1] + cost;
+      current[j] = Math.min(del, ins, sub);
+    }
+    [previous, current] = [current, previous];
+  }
+
+  return previous[bLen];
+}
+
+function tokenLevenshteinSimilarityPct(tokensA, tokensB) {
+  const maxLen = Math.max(tokensA.length, tokensB.length) || 1;
+  const distance = tokenLevenshteinDistance(tokensA, tokensB);
+  return (1 - (distance / maxLen)) * 100;
+}
 // Quick similarity check for pre-filtering
 function quickSimilarityCheck(textVector, licenseVector) {
   const textKeys = Object.keys(textVector);
@@ -959,6 +1034,7 @@ async function fetchLicenses(text, sendProgress, options = {}) {
     const selectedNormalized = normalizeLicenseText(text);
     const selectedLength = selectedNormalized.length;
     const canonSelected = canonicalizeForDiff(selectedNormalized);
+    const selectedTokens = tokenizeNormalizedText(selectedNormalized);
     const isLongSelection = selectedLength > CONFIG.scan.longText.length;
 
     // Selection fingerprint (debug)
@@ -1184,13 +1260,10 @@ async function fetchLicenses(text, sendProgress, options = {}) {
     let effectiveDiffCap = Math.min(MAX_RESULTS * 2, dynamicMaxDiff, MAX_DIFF_CANDIDATES);
 
     // Prepare diff
-    const prevTimeout = dmp.Diff_Timeout;
     let baseDiffTimeout;
     if (selectedLength > CONFIG.scan.longText.length) baseDiffTimeout = 0.08;
     else if (selectedLength > CONFIG.scan.mediumText.length) baseDiffTimeout = 0.14;
     else baseDiffTimeout = 0.18;
-    dmp.Diff_Timeout = baseDiffTimeout;
-
     const DIFF_BUDGET_MS = selectedLength > 10000 ? 2200 :
                          selectedLength > 6000  ? 2600 :
                          selectedLength > 3000  ? 3000 : 3200;
@@ -1228,39 +1301,39 @@ async function fetchLicenses(text, sendProgress, options = {}) {
             cand.name = hydrated.name;
             cand.spdx = hydrated.spdx;
             cand.cacheKey = hydrated.key;
+            if (!licenseVectorsCache[cand.cacheKey]) {
+              licenseVectorsCache[cand.cacheKey] = createTextVector(cand.licenseText);
+            }
           }
 
           const canonLic = cand.canonLicense || canonicalizeForDiff(cand.licenseText);
 
-          // Cap timeout even for top candidates to avoid stalling
-          const saved = dmp.Diff_Timeout;
-          if (isLongSelection && idx < 3) {
-            dmp.Diff_Timeout = Math.max(baseDiffTimeout, 0.8); // was 0 (unlimited), now capped
-          } else {
-            dmp.Diff_Timeout = baseDiffTimeout;
-          }
-
-          let diffChars = dmp.diff_main(canonLic, canonSelected);
-          dmp.diff_cleanupSemantic(diffChars);
+          let diffChars = runCoreDiff(canonLic, canonSelected, 'chars');
           let sims = computeDiffSimilarities(diffChars, canonLic.length, canonSelected.length);
-
           // If segment similarity was good but containment low, try one escalation (only for long selections)
           if (isLongSelection && cand.segSimPct >= (approxThreshold + 6) && sims.containmentPct < FINAL_THRESHOLD) {
-            dmp.Diff_Timeout = Math.max(saved, 0.6);
-            diffChars = dmp.diff_main(canonLic, canonSelected);
-            dmp.diff_cleanupSemantic(diffChars);
+            diffChars = runCoreDiff(canonLic, canonSelected, 'chars');
             sims = computeDiffSimilarities(diffChars, canonLic.length, canonSelected.length);
           }
 
-          dmp.Diff_Timeout = saved;
+          const licenseTokens = tokenizeNormalizedText(cand.licenseText);
+          const tokenLevPct = tokenLevenshteinSimilarityPct(selectedTokens, licenseTokens);
+          const containmentTokenPct = Math.max(0, Math.min(100, (cand.overlapCoeff || 0) * 100));
+          const cosineTokenPct = Math.max(
+            0,
+            Math.min(
+              100,
+              ((cand.cosine ?? cosine(textVector, licenseVectorsCache[cand.cacheKey] || {})) || 0) * 100
+            )
+          );
 
           const finalScore =
-            0.5 * sims.containmentPct +
-            0.3 * sims.avgPct +
-            0.2 * sims.jaccardPct;
+            0.40 * containmentTokenPct +
+            0.35 * cosineTokenPct +
+            0.25 * tokenLevPct;
 
           const passes =
-            sims.containmentPct >= FINAL_THRESHOLD ||
+            containmentTokenPct >= FINAL_THRESHOLD ||
             finalScore >= FINAL_THRESHOLD;
 
           if (passes) {
@@ -1278,7 +1351,9 @@ async function fetchLicenses(text, sendProgress, options = {}) {
               charSimilarity: finalScore.toFixed(2),
               diff: displayDiffHtml,
               diffMetrics: {
-                containment: sims.containmentPct.toFixed(2),
+                containment: containmentTokenPct.toFixed(2),
+                cosine: cosineTokenPct.toFixed(2),
+                tokenLevenshtein: tokenLevPct.toFixed(2),
                 avg: sims.avgPct.toFixed(2),
                 jaccard: sims.jaccardPct.toFixed(2)
               },
@@ -1335,9 +1410,6 @@ async function fetchLicenses(text, sendProgress, options = {}) {
         await runDiffs(expansion);
       }
     }
-
-    dmp.Diff_Timeout = prevTimeout;
-
     console.log('[LicenseMatch][DiffStats]', {
       diffEvaluated,
       refined: refined.length,
@@ -2115,9 +2187,7 @@ chrome.runtime.onStartup.addListener(async () => {
   await ensureDatabaseReady('onStartup');
 });
 
-function generateStableDisplayDiff(licenseText, selectionText) {
-  const originalTimeout = dmp.Diff_Timeout;
-  const displayA = prepareDisplayText(licenseText);
+function generateStableDisplayDiff(licenseText, selectionText) {  const displayA = prepareDisplayText(licenseText);
   const displayB = prepareDisplayText(selectionText);
 
   const normalizeForParagraphDiff = (value) => String(value ?? '')
@@ -2193,7 +2263,7 @@ function generateStableDisplayDiff(licenseText, selectionText) {
   };
 
   const attemptDiff = () => {
-    const timeouts = [Math.max(originalTimeout || 0, 1), 4, 0];
+    const timeouts = [1, 4, 0];
     const attempts = [
       { a: paraA, b: paraB, mode: 'chars' },
       { a: paraA, b: paraB, mode: 'lines' },
@@ -2238,31 +2308,14 @@ function generateStableDisplayDiff(licenseText, selectionText) {
       '<div class="ldiff-error">Diff rendering failed. Showing full texts.</div>' +
       `<div class="ldiff-preview"><strong>Selected text:</strong><pre>${escapeHtml(displayB)}</pre></div>` +
       `<div class="ldiff-preview"><strong>Reference text:</strong><pre>${escapeHtml(displayA)}</pre></div>`
-    );
-  } finally {
-    dmp.Diff_Timeout = originalTimeout;
-  }
+    );  }
 }
 
 function runDisplayDiff(a, b, timeout, mode = 'lines') {
-  const previous = dmp.Diff_Timeout;
-  try {
-    dmp.Diff_Timeout = timeout;
-    let diff;
-    if (mode === 'lines') {
-      const { chars1, chars2, lineArray } = dmp.diff_linesToChars_(a, b);
-      diff = dmp.diff_main(chars1, chars2, false);
-      dmp.diff_charsToLines_(diff, lineArray);
-    } else {
-      diff = dmp.diff_main(a, b, false);
-    }
-    dmp.diff_cleanupSemantic(diff);
-    dmp.diff_cleanupEfficiency(diff);
-    diff = collapseWhitespaceOnlyReplacements(diff);
-    return diff;
-  } finally {
-    dmp.Diff_Timeout = previous;
-  }
+  void timeout;
+  let diff = runCoreDiff(a, b, mode);
+  diff = collapseWhitespaceOnlyReplacements(diff);
+  return diff;
 }
 
 function collapseWhitespaceOnlyReplacements(diff) {
@@ -2343,3 +2396,7 @@ function renderDiffHtml(diff) {
   const html = sanitized.map(([op, data]) => renderBody(op, data)).join('');
   return `<pre class="ldiff-output" id="outputdiv">${html}</pre>`;
 }
+
+
+
+
