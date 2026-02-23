@@ -3,12 +3,14 @@
 console.log('Background script loaded.');
 
 import DiffMatchPatch from "../lib/diff_match_patch.js";
+import { SCAN_DEFAULTS, SCAN_ENDPOINTS } from "../shared/scan-defaults.js";
+import { UI_DEFAULTS } from "../shared/ui-defaults.js";
 
 // configuration constants
 const CONFIG = {
   scan: {
-    maxResults: 10,
-    finalThresholdPct: 15,
+    maxResults: SCAN_DEFAULTS.maxResults,
+    finalThresholdPct: SCAN_DEFAULTS.minSimilarityPct,
     baseApproxThresholdPct: 10,
     maxDiffCandidates: 120,
     batchSize: 60,
@@ -50,13 +52,14 @@ function updateBadge(color) {
 const FILTER_OPTIONS = Object.freeze({ LICENSES: 'licenses', EXCEPTIONS: 'exceptions', BOTH: 'both' });
 const SOURCES = Object.freeze({ LICENSEDB: 'licensedb', SPDX: 'spdx' });
 const SPDX_URLS = Object.freeze({
-  licenses: 'https://spdx.org/licenses/licenses.json',
-  exceptions: 'https://spdx.org/licenses/exceptions.json'
+  licenses: SCAN_ENDPOINTS.spdxLicensesJson,
+  exceptions: SCAN_ENDPOINTS.spdxExceptionsJson
 });
 let currentScanFilter = FILTER_OPTIONS.BOTH;
 function normalizeFilter(value) {
   return Object.values(FILTER_OPTIONS).includes(value) ? value : FILTER_OPTIONS.BOTH;
 }
+currentScanFilter = normalizeFilter(UI_DEFAULTS.scanFilter);
 try {
   chrome.action.setPopup({ popup: 'src/ui/popup/popup.html' });
 } catch (err) {
@@ -69,6 +72,12 @@ let licenseVectorsCache = null; // { license_key: { word: freq, ... } }
 
 // Track which tabs are currently running scans
 const activeScans = new Set();
+let scanTraceCounter = 0;
+
+function nextScanTrace(prefix = 'scan') {
+  scanTraceCounter += 1;
+  return `${prefix}-${Date.now().toString(36)}-${scanTraceCounter}`;
+}
 
 // Database version - increment when structure changes
 const DB_VERSION = 3;
@@ -185,7 +194,7 @@ function makeSpdxEntryKey(kind, id) {
 
 function resolveSpdxDetailsUrl(detailsUrl) {
   try {
-    return new URL(detailsUrl, 'https://spdx.org/licenses/').toString();
+    return new URL(detailsUrl, `${SCAN_ENDPOINTS.spdxLicensesBase}/`).toString();
   } catch {
     return null;
   }
@@ -364,7 +373,7 @@ async function preloadLicenseDatabase() {
     updateBadge("orange");
 
     // First, fetch the license index
-    const licenseList = await fetch('https://scancode-licensedb.aboutcode.org/index.json')
+    const licenseList = await fetch(SCAN_ENDPOINTS.scancodeIndexJson)
       .then(response => response.json());
 
     // Filter out deprecated licenses
@@ -390,7 +399,7 @@ async function preloadLicenseDatabase() {
       await Promise.all(batch.map(async (license) => {
         try {
           // Fetch and store the license details
-          const licenseUrl = `https://scancode-licensedb.aboutcode.org/${license.json}`;
+          const licenseUrl = `${SCAN_ENDPOINTS.scancodeBase}/${license.json}`;
           const licenseData = await fetchWithCache(licenseUrl, license.license_key, 'licenses');
           // Normalize license text before storing vectors and diffs
           if (licenseData && licenseData.text) {
@@ -678,6 +687,20 @@ function approximateCharSimilarity(textVector, licenseVector, wordLenCache, lenS
   return sharedChars / denom;
 }
 
+function estimateTextLengthFromVector(vector) {
+  if (!vector || typeof vector !== 'object') return 0;
+  let words = 0;
+  let chars = 0;
+  for (const term in vector) {
+    const freq = Number(vector[term]) || 0;
+    if (!freq) continue;
+    words += freq;
+    chars += term.length * freq;
+  }
+  const spaces = Math.max(0, words - 1);
+  return chars + spaces;
+}
+
 // Load all stored vectors once (or as many as available). Missing vectors can be generated lazily.
 async function loadAllVectors() {
   if (licenseVectorsCache) return licenseVectorsCache;
@@ -793,7 +816,7 @@ async function loadUserSettings() {
   const defaults = {
     maxResults: CONFIG.scan.maxResults,
     minSimilarityPct: CONFIG.scan.finalThresholdPct,
-    scanFilter: FILTER_OPTIONS.BOTH
+    scanFilter: normalizeFilter(UI_DEFAULTS.scanFilter)
   };
   return new Promise((resolve) => {
     try {
@@ -810,7 +833,7 @@ async function loadUserSettings() {
 
 async function getCombinedScanIndex(scanFilter) {
   const licenseDbIndex = await fetchWithCache(
-    'https://scancode-licensedb.aboutcode.org/index.json',
+    SCAN_ENDPOINTS.scancodeIndexJson,
     'index',
     'metadata'
   );
@@ -837,7 +860,7 @@ async function getCombinedScanIndex(scanFilter) {
       storeKey: l.license_key,
       isException: !!l.is_exception,
       spdx: l.spdx_license_key || l.license_key,
-      detailUrl: `https://scancode-licensedb.aboutcode.org/${l.json}`,
+      detailUrl: `${SCAN_ENDPOINTS.scancodeBase}/${l.json}`,
       raw: l
     }));
 
@@ -1032,17 +1055,16 @@ async function fetchLicenses(text, sendProgress, options = {}) {
       const batch = licenses.slice(i, i + batchSize);
       const batchResults = await Promise.all(batch.map(async (lic) => {
         try {
-          const licData = await loadScanEntryData(lic).catch(() => null);
-          if (!licData || !licData.text) return null;
-
-          const licenseTextNorm = normalizeLicenseText(licData.text);
-          // Cache canonical once
-          const canonLic = canonicalizeForDiff(licenseTextNorm);
-          let licenseVector = licenseVectorsCache[licData.key];
+          let licenseVector = licenseVectorsCache[lic.storeKey];
           if (!licenseVector) {
+            const licData = await loadScanEntryData(lic).catch(() => null);
+            if (!licData || !licData.text) return null;
+            const licenseTextNorm = normalizeLicenseText(licData.text);
             licenseVector = createTextVector(licenseTextNorm);
-            licenseVectorsCache[licData.key] = licenseVector;
+            licenseVectorsCache[lic.storeKey] = licenseVector;
           }
+
+          const estimatedLicenseLen = estimateTextLengthFromVector(licenseVector);
 
         // Quick structural filter
         if (!quickSimilarityCheck(textVector, licenseVector)) {
@@ -1054,7 +1076,7 @@ async function fetchLicenses(text, sendProgress, options = {}) {
         // Approx char similarity (%)
         const approxPct = approximateCharSimilarity(
           textVector, licenseVector, wordLenCache,
-          selectedLength, licenseTextNorm.length
+          selectedLength, estimatedLicenseLen || selectedLength
         ) * 100;
 
         // Hybrid light metrics
@@ -1067,16 +1089,16 @@ async function fetchLicenses(text, sendProgress, options = {}) {
         }
         let shingleJac = 0;
         if (selShingles.size) {
-          let licShingles = licenseShingleCache[licData.key];
+          let licShingles = licenseShingleCache[lic.storeKey];
           if (!licShingles) {
             licShingles = buildShingles(licWords, 5);
-            licenseShingleCache[licData.key] = licShingles;
+            licenseShingleCache[lic.storeKey] = licShingles;
           }
           if (licShingles.size) shingleJac = jaccard(selShingles, licShingles);
         }
 
-        // Segment-based similarity only for long selections (skip for short to keep fast)
-        const segSimPct = isLongSelection ? (computeSegmentSimilarity(canonLic, canonSelected) * 100) : 0;
+        // Keep the approximate phase vector-only; defer full text loading to diff stage.
+        const segSimPct = 0;
 
         // Blend: conservative weighted blend. For short selections, ignore segSimPct.
         const combined = isLongSelection
@@ -1109,19 +1131,17 @@ async function fetchLicenses(text, sendProgress, options = {}) {
         }
 
         return {
-          license: licData.license,
-          name: licData.name,
-          spdx: licData.spdx,
+          entry: lic,
+          license: lic.key,
+          spdx: lic.spdx || lic.key,
           source: lic.source,
-          cacheKey: licData.key,
+          cacheKey: lic.storeKey,
           approxSimilarity: combined,
           rawApprox: approxPct,
           overlapCoeff: overlapCoeffVal,
           cosine: cosineVal,
           shingleJac,
-          segSimPct,
-          licenseText: licenseTextNorm,
-          canonLicense: canonLic
+          segSimPct
         };
         } catch {
           return null;
@@ -1149,19 +1169,13 @@ async function fetchLicenses(text, sendProgress, options = {}) {
 
     // Fallback if very few candidates
     if (approxCandidates.length < 5) {
-      console.warn(`[LicenseMatch] Fallback (<5 candidates).`);
+      console.info(`[LicenseMatch] Fallback (<5 candidates).`);
       const textTokenSet = new Set(selWords);
       const overlapScores = [];
       for (const lic of licenses) {
         try {
-          const licData = await loadScanEntryData(lic).catch(() => null);
-          if (!licData || !licData.text) continue;
-          let vec = licenseVectorsCache[licData.key];
-          if (!vec) {
-            const norm = normalizeLicenseText(licData.text);
-            vec = createTextVector(norm);
-            licenseVectorsCache[licData.key] = vec;
-          }
+          const vec = licenseVectorsCache[lic.storeKey];
+          if (!vec) continue;
           const licKeys = Object.keys(vec);
           let overlapCount = 0;
           for (const t of licKeys) {
@@ -1169,26 +1183,24 @@ async function fetchLicenses(text, sendProgress, options = {}) {
           }
           if (!overlapCount) continue;
           const overlapCoeffVal = overlapCount / Math.min(textTokenSet.size, licKeys.length);
-          overlapScores.push({ lic, licData, overlapCoeffVal, overlapCount });
+          overlapScores.push({ lic, overlapCoeffVal, overlapCount });
         } catch { /* ignore */ }
       }
       overlapScores.sort((a, b) => b.overlapCoeffVal - a.overlapCoeffVal || b.overlapCount - a.overlapCount);
       for (const s of overlapScores.slice(0, 40)) {
         try {
-          const norm = normalizeLicenseText(s.licData.text);
           approxCandidates.push({
-            license: s.licData.license,
-            name: s.licData.name,
-            spdx: s.licData.spdx,
+            entry: s.lic,
+            license: s.lic.key,
+            spdx: s.lic.spdx || s.lic.key,
             source: s.lic.source,
-            cacheKey: s.licData.key,
+            cacheKey: s.lic.storeKey,
             approxSimilarity: s.overlapCoeffVal * 100,
-            licenseText: norm,
             overlapCoeff: s.overlapCoeffVal
           });
         } catch { /* ignore */ }
       }
-      console.warn(`[LicenseMatch] Fallback expanded candidates to ${approxCandidates.length}.`);
+      console.info(`[LicenseMatch] Fallback expanded candidates to ${approxCandidates.length}.`);
     }
 
     // Sort by strongest signal: for long, consider segSim; for short, use approxSimilarity
@@ -1233,7 +1245,7 @@ async function fetchLicenses(text, sendProgress, options = {}) {
     async function runDiffs(cands) {
       for (let idx = 0; idx < cands.length; idx++) {
         if ((performance.now() - startDiffPhase) > DIFF_BUDGET_MS) {
-          console.warn('[LicenseMatch][Diff] Budget exceeded; stopping.');
+          console.info('[LicenseMatch][Diff] Budget exceeded; stopping.');
           budgetExceeded = true;
           break;
         }
@@ -1241,6 +1253,18 @@ async function fetchLicenses(text, sendProgress, options = {}) {
 
         const cand = cands[idx];
         try {
+          if (!cand.licenseText) {
+            const hydrated = await loadScanEntryData(cand.entry).catch(() => null);
+            if (!hydrated || !hydrated.text) {
+              continue;
+            }
+            cand.licenseText = normalizeLicenseText(hydrated.text);
+            cand.license = hydrated.license;
+            cand.name = hydrated.name;
+            cand.spdx = hydrated.spdx;
+            cand.cacheKey = hydrated.key;
+          }
+
           const canonLic = cand.canonLicense || canonicalizeForDiff(cand.licenseText);
 
           // Cap timeout even for top candidates to avoid stalling
@@ -1295,8 +1319,8 @@ async function fetchLicenses(text, sendProgress, options = {}) {
               },
               score: finalScore.toFixed(2),
               link: (cand.source === SOURCES.SPDX)
-                ? `https://spdx.org/licenses/${cand.license}.html`
-                : `https://scancode-licensedb.aboutcode.org/${cand.license}.html`
+                ? `${SCAN_ENDPOINTS.spdxLicensesBase}/${cand.license}.html`
+                : `${SCAN_ENDPOINTS.scancodeBase}/${cand.license}.html`
             });
           }
         } catch (e) {
@@ -1371,9 +1395,16 @@ async function fetchLicenses(text, sendProgress, options = {}) {
 }
 
 // Process a license check request
-async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTIONS.BOTH) {
+async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTIONS.BOTH, traceId = nextScanTrace('scan')) {
+  const startedAt = performance.now();
+  console.info(`[LicenseMatch][${traceId}] processLicenseCheck begin`, {
+    tabId,
+    filter: scanFilter,
+    textLength: selectedText?.length || 0
+  });
+
   if (!tabId) {
-    console.error('processLicenseCheck called without a tab ID.');
+    console.error(`[LicenseMatch][${traceId}] processLicenseCheck called without a tab ID.`);
     return;
   }
 
@@ -1394,7 +1425,7 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
     // Make sure content script is available
     const ready = await ensureContentScript(tabId);
     if (!ready) {
-      console.error('Content script not available after injection attempts.');
+      console.error(`[LicenseMatch][${traceId}] Content script not available after injection attempts.`);
       return;
     }
     // Show UI and clear previous results with retry
@@ -1429,7 +1460,10 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
         const bScore = Number.parseFloat(b?.charSimilarity ?? b?.score ?? 0) || 0;
         return bScore - aScore;
       });
-      console.log('Sending showResults with', matches.length, 'matches. Top license:', matches[0]?.license);
+      console.info(`[LicenseMatch][${traceId}] sending showResults`, {
+        matches: matches.length,
+        top: matches[0]?.license
+      });
       // Report the matches to the content script
       await sendMessageToTab(tabId, {
         action: 'showResults',
@@ -1442,7 +1476,7 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
       });
     }
   } catch (error) {
-    console.error('Error processing license check:', error);
+    console.error(`[LicenseMatch][${traceId}] Error processing license check:`, error);
     try {
       await sendMessageToTab(tabId, {
         action: 'showError',
@@ -1452,6 +1486,8 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
       console.error('Error showing error notification:', err);
     }
   } finally {
+    const durationMs = (performance.now() - startedAt).toFixed(1);
+    console.info(`[LicenseMatch][${traceId}] processLicenseCheck end`, { tabId, durationMs });
     // Remove this tab from active scans
     activeScans.delete(tabId);
   }
@@ -1488,20 +1524,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'checkLicense') {
     const selectedText = message.text;
     const scanFilter = normalizeFilter(message.filter || currentScanFilter);
+    const traceId = nextScanTrace('msg');
+    console.info(`[LicenseMatch][${traceId}] checkLicense received`, {
+      hasSenderTab: !!sender?.tab?.id,
+      textLength: selectedText?.length || 0,
+      filter: scanFilter
+    });
 
     const startProcessing = (tabId) => {
-      processLicenseCheck(tabId, selectedText, scanFilter)
-        .then(() => {
-          sendResponse({ status: 'complete' });
-        })
+      console.info(`[LicenseMatch][${traceId}] starting processLicenseCheck`, { tabId, filter: scanFilter });
+      processLicenseCheck(tabId, selectedText, scanFilter, traceId)
         .catch((error) => {
-          console.error('processLicenseCheck failed:', error);
-          sendResponse({ status: 'error', error: error?.message || 'Unknown error' });
+          console.error(`[LicenseMatch][${traceId}] processLicenseCheck failed:`, error);
         });
     };
 
     // Store the tab ID that initiated the request
     const senderTabId = sender.tab ? sender.tab.id : null;
+
+    // Acknowledge immediately; scanning progress/results are delivered separately
+    // via tab messages and do not require keeping this response channel open.
+    sendResponse({ status: 'started' });
 
     if (!senderTabId) {
       // If no tab ID is available (e.g., sent from popup), get the current active tab
@@ -1509,7 +1552,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (chrome.runtime.lastError || !tabs || tabs.length === 0) {
           const errMsg = chrome.runtime.lastError ? chrome.runtime.lastError.message : 'No active tabs found';
           console.error('Error getting active tab:', errMsg);
-          sendResponse({ status: 'error', error: errMsg });
           return;
         }
 
@@ -1519,7 +1561,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       startProcessing(senderTabId);
     }
 
-    return true; // Keep the port open while processing completes
+    return false;
   } else if (message.action === 'noTextSelected') {
     // Handle no text selected
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -1549,9 +1591,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Keep port open for async response
   } else if (message.action === 'startScanWithFilter') {
     const chosenFilter = normalizeFilter(message.filter);
+    const traceId = nextScanTrace('popup');
     currentScanFilter = chosenFilter;
-    chrome.storage?.sync?.set({ scanFilter: chosenFilter }, () => { initiateScanForActiveTab(chosenFilter); });
-    sendResponse({ started: true });
+    console.info(`[LicenseMatch][${traceId}] startScanWithFilter received`, { filter: chosenFilter });
+
+    (async () => {
+      try {
+        await new Promise((resolve) => {
+          try {
+            chrome.storage?.sync?.set({ scanFilter: chosenFilter }, () => resolve(true));
+          } catch {
+            resolve(true);
+          }
+        });
+
+        await initiateScanForActiveTab(chosenFilter, traceId);
+        console.info(`[LicenseMatch][${traceId}] scan initiation requested`);
+        sendResponse({ started: true });
+      } catch (error) {
+        console.error(`[LicenseMatch][${traceId}] startScanWithFilter failed:`, error);
+        sendResponse({ started: false, error: error?.message || 'Failed to start scan' });
+      }
+    })();
+
     return true;
   }
 
@@ -1640,7 +1702,7 @@ async function getLicenseDbVersion() {
     // Preferred: parse the user-facing footer text from index.html,
     // e.g. "Generated with ScanCode toolkit 32.5.0 on 2026-01-22."
     try {
-      const htmlResp = await fetch('https://scancode-licensedb.aboutcode.org/index.html', { cache: 'no-cache' });
+      const htmlResp = await fetch(SCAN_ENDPOINTS.scancodeIndexHtml, { cache: 'no-cache' });
       if (htmlResp.ok) {
         const html = await htmlResp.text();
         const match = html.match(/Generated\s+with\s+ScanCode\s+toolkit\s+([0-9]+(?:\.[0-9]+)*)\s+on\s+(\d{4}-\d{2}-\d{2})/i);
@@ -1657,7 +1719,7 @@ async function getLicenseDbVersion() {
     }
 
     // Fallback: derive a pseudo version from index.json content fingerprint
-    const resp = await fetch('https://scancode-licensedb.aboutcode.org/index.json', { cache: 'no-cache' });
+    const resp = await fetch(SCAN_ENDPOINTS.scancodeIndexJson, { cache: 'no-cache' });
     if (!resp.ok) throw new Error('Failed to fetch license index for version');
     const text = await resp.text();
     let hash = 0; for (let i = 0; i < text.length; i++) { hash = (hash * 31 + text.charCodeAt(i)) >>> 0; }
@@ -1769,7 +1831,7 @@ async function forceUpdateDatabase() {
 
     // Fetch the license index to check for changes
     sendProgressUpdate(5, 'Fetching license index...');
-    const response = await fetch('https://scancode-licensedb.aboutcode.org/index.json', {
+    const response = await fetch(SCAN_ENDPOINTS.scancodeIndexJson, {
       cache: 'no-cache' // Force fresh content
     });
 
@@ -1805,7 +1867,7 @@ async function forceUpdateDatabase() {
       await Promise.all(batch.map(async (license) => {
         try {
           // Fetch with no-cache to get fresh content
-          const licenseUrl = `https://scancode-licensedb.aboutcode.org/${license.json}`;
+          const licenseUrl = `${SCAN_ENDPOINTS.scancodeBase}/${license.json}`;
           const response = await fetch(licenseUrl, { cache: 'no-cache' });
 
           if (!response.ok) {
@@ -2000,24 +2062,32 @@ function sendProgressUpdate(progress, message, complete = false) {
 
 // Update the action click handler to ensure connection before execution
 chrome.action.onClicked.addListener(async (tab) => {
-  await handleActionClick(tab, currentScanFilter);
+  const traceId = nextScanTrace('action');
+  console.info(`[LicenseMatch][${traceId}] action icon clicked`, { tabId: tab?.id, filter: currentScanFilter });
+  await handleActionClick(tab, currentScanFilter, traceId);
 });
 
-async function initiateScanForActiveTab(filterChoice) {
+async function initiateScanForActiveTab(filterChoice, traceId = nextScanTrace('start')) {
   try {
+    console.info(`[LicenseMatch][${traceId}] resolving active tab`, { filter: filterChoice });
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab) await handleActionClick(tab, filterChoice);
-    else console.warn('No active tab for scan.');
+    if (tab) {
+      console.info(`[LicenseMatch][${traceId}] active tab resolved`, { tabId: tab.id, url: tab.url || '' });
+      await handleActionClick(tab, filterChoice, traceId);
+    } else {
+      console.warn(`[LicenseMatch][${traceId}] No active tab for scan.`);
+    }
   } catch (err) {
-    console.error('initiateScanForActiveTab failed:', err);
+    console.error(`[LicenseMatch][${traceId}] initiateScanForActiveTab failed:`, err);
   }
 }
 
-async function handleActionClick(tab, filterChoice) {
+async function handleActionClick(tab, filterChoice, traceId = nextScanTrace('handle')) {
   try {
+    console.info(`[LicenseMatch][${traceId}] handleActionClick begin`, { tabId: tab?.id, filter: filterChoice });
     const url = tab.url || '';
     if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') || url.startsWith('about:') || url.startsWith('edge://')) {
-      console.warn('Cannot run on this page type:', url);
+      console.warn(`[LicenseMatch][${traceId}] Cannot run on this page type:`, url);
       return;
     }
     const results = await chrome.scripting.executeScript({
@@ -2041,20 +2111,27 @@ async function handleActionClick(tab, filterChoice) {
     // Pick longest non-null selection
     const candidates = results.map(r => r.result).filter(r => r && r.text && r.text.trim());
     if (candidates.length === 0) {
+      console.info(`[LicenseMatch][${traceId}] no selected text found in frames`);
       showNotification(tab.id, 'Please select text before running license check.', 'warning');
       return;
     }
     const best = candidates.reduce((a, b) => (b.text.length > a.text.length ? b : a));
+    console.info(`[LicenseMatch][${traceId}] selection captured`, {
+      candidates: candidates.length,
+      selectedLength: best.text.length,
+      inIframe: !!best.inIframe,
+      frameUrl: best.frameUrl || ''
+    });
 
     // Send single message to existing handler (adds iframe metadata for future use)
     // Directly initiate processing instead of round-trip messaging
     sendMessageToTab(tab.id, { action: 'showUI' })
       .catch(() => Promise.resolve())
       .finally(() => {
-        processLicenseCheck(tab.id, best.text, filterChoice);
+        processLicenseCheck(tab.id, best.text, filterChoice, traceId);
       });
   } catch (err) {
-    console.error('Selection collection error:', err);
+    console.error(`[LicenseMatch][${traceId}] Selection collection error:`, err);
     showNotification(tab.id, 'Error gathering selection: ' + (err.message || 'Unknown error'), 'error');
   }
 }

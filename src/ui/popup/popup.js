@@ -1,4 +1,6 @@
-const FILTER_DEFAULT = 'both';
+import { UI_DEFAULTS } from "../../shared/ui-defaults.js";
+
+const FILTER_DEFAULT = UI_DEFAULTS.scanFilter;
 
 function storageGet(defaults) {
   return new Promise((resolve) => {

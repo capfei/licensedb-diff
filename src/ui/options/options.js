@@ -1,3 +1,6 @@
+import { SCAN_DEFAULTS } from "../../shared/scan-defaults.js";
+import { UI_DEFAULTS } from "../../shared/ui-defaults.js";
+
 document.addEventListener('DOMContentLoaded', async function() {
   // Initialize UI
   await loadDatabaseInfo();
@@ -13,12 +16,16 @@ document.addEventListener('DOMContentLoaded', async function() {
   document.getElementById('save-theme')?.addEventListener('click', saveThemeFromForm);
 });
 
-// Defaults aligned with background CONFIG
-const DEFAULT_SETTINGS = {
-  maxResults: 20,
-  minSimilarityPct: 15
+// Defaults loaded from background CONFIG (single source of truth)
+let DEFAULT_SETTINGS = {
+  maxResults: SCAN_DEFAULTS.maxResults,
+  minSimilarityPct: SCAN_DEFAULTS.minSimilarityPct,
+  maxResultsMin: SCAN_DEFAULTS.maxResultsMin,
+  maxResultsMax: SCAN_DEFAULTS.maxResultsMax,
+  minSimilarityMin: SCAN_DEFAULTS.minSimilarityMin,
+  minSimilarityMax: SCAN_DEFAULTS.minSimilarityMax
 };
-const DEFAULT_APPEARANCE = { theme: 'light' };
+const DEFAULT_APPEARANCE = { theme: UI_DEFAULTS.theme };
 
 function storageGet(keysWithDefaults) {
   return new Promise((resolve) => {
@@ -51,6 +58,11 @@ async function loadUserSettingsToForm() {
   const maxResultsInput = document.getElementById('max-results');
   const minSimInput = document.getElementById('min-similarity');
 
+  maxResultsInput.min = String(DEFAULT_SETTINGS.maxResultsMin);
+  maxResultsInput.max = String(DEFAULT_SETTINGS.maxResultsMax);
+  minSimInput.min = String(DEFAULT_SETTINGS.minSimilarityMin);
+  minSimInput.max = String(DEFAULT_SETTINGS.minSimilarityMax);
+
   maxResultsInput.value = Number.isFinite(maxResults) ? maxResults : DEFAULT_SETTINGS.maxResults;
   minSimInput.value = Number.isFinite(minSimilarityPct) ? minSimilarityPct : DEFAULT_SETTINGS.minSimilarityPct;
 }
@@ -66,8 +78,8 @@ async function saveUserSettingsFromForm() {
   if (!Number.isFinite(maxResults)) maxResults = DEFAULT_SETTINGS.maxResults;
   if (!Number.isFinite(minSimilarityPct)) minSimilarityPct = DEFAULT_SETTINGS.minSimilarityPct;
 
-  maxResults = Math.max(1, Math.min(100, maxResults));
-  minSimilarityPct = Math.max(0, Math.min(100, minSimilarityPct));
+  maxResults = Math.max(DEFAULT_SETTINGS.maxResultsMin, Math.min(DEFAULT_SETTINGS.maxResultsMax, maxResults));
+  minSimilarityPct = Math.max(DEFAULT_SETTINGS.minSimilarityMin, Math.min(DEFAULT_SETTINGS.minSimilarityMax, minSimilarityPct));
 
   try {
     await storageSet({ maxResults, minSimilarityPct });
