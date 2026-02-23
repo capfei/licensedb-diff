@@ -4,7 +4,7 @@ console.log('Background script loaded.');
 
 import DiffMatchPatch from "../lib/diff_match_patch.js";
 import { SCAN_DEFAULTS, SCAN_ENDPOINTS } from "../shared/scan-defaults.js";
-import { UI_DEFAULTS } from "../shared/ui-defaults.js";
+import { UI_DEFAULTS, BADGE_STYLES, BADGE_DEFAULT } from "../shared/ui-defaults.js";
 
 // configuration constants
 const CONFIG = {
@@ -22,33 +22,15 @@ const CONFIG = {
     minLengthRatio: 0.4,
     maxLengthRatio: 3.5,
     overlapFraction: 0.15
-  },
-  cache: {
-    updateIntervalMs: 14 * 24 * 60 * 60 * 1000
-  },
-  updates: {
-    periodicAlarmMinutes: 60 * 24
   }
 };
+
 function updateBadge(color) {
-  switch (color) {
-    case 'green':
-      chrome.action.setBadgeText({ text: 'Diff' });
-      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
-      break;
-    case 'red':
-      chrome.action.setBadgeText({ text: 'Error' });
-      chrome.action.setBadgeBackgroundColor({ color: '#F44336' });
-      break;
-    case 'orange':
-      chrome.action.setBadgeText({ text: 'Load' });
-      chrome.action.setBadgeBackgroundColor({ color: '#FF8C00' });
-      break;
-    default:
-      chrome.action.setBadgeText({ text: 'Diff' });
-      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
-  }
+  const style = BADGE_STYLES[color] || BADGE_STYLES[BADGE_DEFAULT];
+  chrome.action.setBadgeText({ text: style.text });
+  chrome.action.setBadgeBackgroundColor({ color: style.color });
 }
+
 const FILTER_OPTIONS = Object.freeze({ LICENSES: 'licenses', EXCEPTIONS: 'exceptions', BOTH: 'both' });
 const SOURCES = Object.freeze({ LICENSEDB: 'licensedb', SPDX: 'spdx' });
 const SPDX_URLS = Object.freeze({
@@ -56,15 +38,12 @@ const SPDX_URLS = Object.freeze({
   exceptions: SCAN_ENDPOINTS.spdxExceptionsJson
 });
 let currentScanFilter = FILTER_OPTIONS.BOTH;
+
 function normalizeFilter(value) {
   return Object.values(FILTER_OPTIONS).includes(value) ? value : FILTER_OPTIONS.BOTH;
 }
+
 currentScanFilter = normalizeFilter(UI_DEFAULTS.scanFilter);
-try {
-  chrome.action.setPopup({ popup: 'src/ui/popup/popup.html' });
-} catch (err) {
-  console.warn('Popup attach failed:', err);
-}
 
 const dmp = new DiffMatchPatch();
 // In-memory cache of license term-frequency vectors (populated on demand)
@@ -370,7 +349,7 @@ async function preloadLicenseDatabase() {
     }
 
     console.log('Starting license database initialization...');
-    updateBadge("orange");
+    updateBadge('orange');
 
     // First, fetch the license index
     const licenseList = await fetch(SCAN_ENDPOINTS.scancodeIndexJson)
@@ -444,13 +423,13 @@ async function preloadLicenseDatabase() {
     await recordUpdateTimestamp();
 
     // Reset badge
-    updateBadge("green");
+    updateBadge('green');
 
     console.log(`License database initialization completed. Processed ${processed} licenses with ${failures} failures.`);
     return true;
   } catch (error) {
     console.error('Error initializing license database:', error);
-    updateBadge("red");
+    updateBadge('red');
     return false;
   }
 }
@@ -637,20 +616,6 @@ function computeDiffSimilarities(diff, lenA, lenB) {
     containmentPct: (same / containmentDenom) * 100,
     jaccardPct: (same / unionDenom) * 100
   };
-}
-
-// Compute character similarity using existing diff (sum of equal segment lengths / average length)
-function computeCharSimilarityFromDiff(diff, lenA, lenB) {
-  if (!diff || !diff.length) return 0;
-  let same = 0;
-  for (const tuple of diff) {
-    // tuple is a diff_match_patch.Diff object with numeric keys 0 (op) and 1 (text)
-    const op = tuple[0];
-    const data = tuple[1] || '';
-    if (op === 0) same += data.length;
-  }
-  const denom = (lenA + lenB) / 2 || 1;
-  return same / denom;
 }
 
 // Quick similarity check for pre-filtering
@@ -1493,23 +1458,6 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
   }
 }
 
-// Function to get selected text and send to background script
-function checkedLicenses() {
-  try {
-    const selectedText = window.getSelection().toString();
-
-    if (selectedText) {
-      chrome.runtime.sendMessage({ action: 'checkLicense', text: selectedText });
-    } else {
-      console.error('No text selected.');
-      // Show a notification about no text selected
-      chrome.runtime.sendMessage({ action: 'noTextSelected' });
-    }
-  } catch (error) {
-    console.error('Error in checkedLicenses:', error);
-  }
-}
-
 // Message listener
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.action === 'openExternal' && typeof message.url === 'string') {
@@ -1824,7 +1772,7 @@ async function cacheSpdxListVersion(versionInfo) {
 async function forceUpdateDatabase() {
   try {
     // Set badge to indicate update in progress
-    updateBadge("orange");
+    updateBadge('orange');
 
     // Send initial progress to options page
     sendProgressUpdate(0, 'Starting database update...');
@@ -1938,7 +1886,7 @@ async function forceUpdateDatabase() {
     console.log(`License database update completed. Processed ${processed} licenses with ${failures} failures.`);
 
     // Reset badge
-    updateBadge("green");
+    updateBadge('green');
 
     return true;
   } catch (error) {
@@ -1948,10 +1896,10 @@ async function forceUpdateDatabase() {
     sendProgressUpdate(0, `Error: ${error.message || 'Unknown error'}`, true);
 
     // Error badge and then reset
-    updateBadge("red");
+    updateBadge('red');
 
     setTimeout(() => {
-      updateBadge("green");
+      updateBadge('green');
     }, 5000);
 
     throw error;
@@ -1962,7 +1910,7 @@ async function forceUpdateDatabase() {
 async function resetDatabase() {
   try {
     // Set badge to indicate reset in progress
-    updateBadge("orange");
+    updateBadge('orange');
 
     // Send initial progress to options page
     sendProgressUpdate(0, 'Deleting database...');
@@ -2009,7 +1957,7 @@ async function resetDatabase() {
     sendProgressUpdate(100, 'Database reset and reinitialized successfully', true);
 
     // Reset badge
-    updateBadge("green");
+    updateBadge('green');
 
     return true;
   } catch (error) {
@@ -2019,10 +1967,10 @@ async function resetDatabase() {
     sendProgressUpdate(0, `Error: ${error.message || 'Unknown error'}`, true);
 
     // Reset badge
-    updateBadge("red");
+    updateBadge('red');
 
     setTimeout(() => {
-      updateBadge("green");
+      updateBadge('green');
     }, 5000);
 
     throw error;
@@ -2158,7 +2106,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   console.log('[LicenseMatch] onInstalled:', details.reason);
   if (details.reason === 'update') {
     // Reset badge
-    updateBadge("green");
+    updateBadge('green');
   }
   await ensureDatabaseReady('onInstalled');
 });

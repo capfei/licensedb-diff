@@ -21,7 +21,7 @@ completed, it will return the top 20 results (this can be changed in the extensi
 select each result from the dropdown to see the differences and copy the license identifier by clicking
 on the copy button.
 
-Licenses and exceptions that are marked with `"is_deprecated": true` are currently excluded from comparison
+Licenses and exceptions that are marked as deprecated are currently excluded from comparison
 but I would like to add the ability to include/exclude as an option in the future.
 
 This has only been tested to diff text on web pages and may not work correctly for documents being
