@@ -1,5 +1,5 @@
 export const SCAN_DEFAULTS = Object.freeze({
-  maxResults: 20,
+  maxResults: 10,
   minSimilarityPct: 15,
   maxResultsMin: 1,
   maxResultsMax: 100,

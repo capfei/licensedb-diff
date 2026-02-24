@@ -2,7 +2,7 @@
 'use strict';
 console.log('Background script loaded.');
 
-import "../lib/diff.js";
+import DiffMatchPatch from "../lib/diff_match_patch.js";
 import { SCAN_DEFAULTS, SCAN_ENDPOINTS } from "../shared/scan-defaults.js";
 import { UI_DEFAULTS, BADGE_STYLES, BADGE_DEFAULT } from "../shared/ui-defaults.js";
 
@@ -45,7 +45,7 @@ function normalizeFilter(value) {
 
 currentScanFilter = normalizeFilter(UI_DEFAULTS.scanFilter);
 
-const jsdiff = globalThis.Diff;
+const dmp = new DiffMatchPatch();
 // In-memory cache of license term-frequency vectors (populated on demand)
 let licenseVectorsCache = null; // { license_key: { word: freq, ... } }
 
@@ -588,10 +588,8 @@ function canonicalizeForDiff(text) {
     .replace(/[‘’‚‛]/g, "'")
     .replace(/[\u2013\u2014]/g, '-')          // en/em dash -> hyphen
     .replace(/\u00a0/g, ' ')                  // non-breaking space
-    //.replace(/\n+/g, ' ')                    // collapse newlines
     .replace(/[ \t]+/g, ' ')                  // collapse spaces/tabs
     .trim()
-    //.toLowerCase();
 }
 
 // Prepare text for visual diff display
@@ -603,43 +601,9 @@ function prepareDisplayText(text) {
     .replace(/\u00a0/g, ' ');
 }
 
-function normalizeDiffTuple(entry) {
-  if (!entry) return null;
-  if (Array.isArray(entry)) return [entry[0], String(entry[1] ?? '')];
-
-  if (typeof entry === 'object') {
-    if (typeof entry.added === 'boolean' || typeof entry.removed === 'boolean') {
-      const op = entry.added ? 1 : (entry.removed ? -1 : 0);
-      return [op, String(entry.value ?? '')];
-    }
-
-    const op = entry.op ?? entry.operation ?? entry.type ?? entry[0];
-    const data = entry.text ?? entry.data ?? entry.value ?? entry[1];
-    if (op === undefined || data === undefined) return null;
-    return [op, String(data)];
-  }
-
-  return null;
-}
-
-function normalizeDiffTuples(diff) {
-  if (!Array.isArray(diff)) return [];
-  return diff.map(normalizeDiffTuple).filter(Boolean);
-}
-
-function runCoreDiff(a, b, mode = 'chars') {
-  if (!jsdiff) throw new Error('jsdiff API is unavailable');
-  const result = mode === 'lines'
-    ? jsdiff.diffLines(a, b, { newlineIsToken: false, ignoreWhitespace: false })
-    : jsdiff.diffChars(a, b);
-  return normalizeDiffTuples(result);
-}
-
-
 function computeDiffSimilarities(diff, lenA, lenB) {
-  const tuples = normalizeDiffTuples(diff);
   let same = 0;
-  for (const tuple of tuples) {
+  for (const tuple of diff) {
     if (tuple[0] === 0 && tuple[1]) same += tuple[1].length;
   }
   const avgDenom = (lenA + lenB) / 2 || 1;
@@ -693,6 +657,7 @@ function tokenLevenshteinSimilarityPct(tokensA, tokensB) {
   const distance = tokenLevenshteinDistance(tokensA, tokensB);
   return (1 - (distance / maxLen)) * 100;
 }
+
 // Quick similarity check for pre-filtering
 function quickSimilarityCheck(textVector, licenseVector) {
   const textKeys = Object.keys(textVector);
@@ -1260,13 +1225,17 @@ async function fetchLicenses(text, sendProgress, options = {}) {
     let effectiveDiffCap = Math.min(MAX_RESULTS * 2, dynamicMaxDiff, MAX_DIFF_CANDIDATES);
 
     // Prepare diff
+    const prevTimeout = dmp.Diff_Timeout;
     let baseDiffTimeout;
     if (selectedLength > CONFIG.scan.longText.length) baseDiffTimeout = 0.08;
     else if (selectedLength > CONFIG.scan.mediumText.length) baseDiffTimeout = 0.14;
     else baseDiffTimeout = 0.18;
-    const DIFF_BUDGET_MS = selectedLength > 10000 ? 2200 :
-                         selectedLength > 6000  ? 2600 :
-                         selectedLength > 3000  ? 3000 : 3200;
+    dmp.Diff_Timeout = baseDiffTimeout;
+
+    const DIFF_BUDGET_MS = selectedLength > 20000 ? 8000 :
+                         selectedLength > 10000 ? 5000 :
+                         selectedLength > 6000  ? 4000 :
+                         selectedLength > 3000  ? 3500 : 3200;
 
     const refined = [];
     const startDiffPhase = performance.now();
@@ -1301,21 +1270,33 @@ async function fetchLicenses(text, sendProgress, options = {}) {
             cand.name = hydrated.name;
             cand.spdx = hydrated.spdx;
             cand.cacheKey = hydrated.key;
-            if (!licenseVectorsCache[cand.cacheKey]) {
-              licenseVectorsCache[cand.cacheKey] = createTextVector(cand.licenseText);
-            }
           }
 
           const canonLic = cand.canonLicense || canonicalizeForDiff(cand.licenseText);
 
-          let diffChars = runCoreDiff(canonLic, canonSelected, 'chars');
+          // Cap timeout even for top candidates to avoid stalling
+          const saved = dmp.Diff_Timeout;
+          if (isLongSelection && idx < 3) {
+            dmp.Diff_Timeout = Math.max(baseDiffTimeout, 0.8); // was 0 (unlimited), now capped
+          } else {
+            dmp.Diff_Timeout = baseDiffTimeout;
+          }
+
+          let diffChars = dmp.diff_main(canonLic, canonSelected);
+          dmp.diff_cleanupSemantic(diffChars);
           let sims = computeDiffSimilarities(diffChars, canonLic.length, canonSelected.length);
+
           // If segment similarity was good but containment low, try one escalation (only for long selections)
           if (isLongSelection && cand.segSimPct >= (approxThreshold + 6) && sims.containmentPct < FINAL_THRESHOLD) {
-            diffChars = runCoreDiff(canonLic, canonSelected, 'chars');
+            dmp.Diff_Timeout = Math.max(saved, 0.6);
+            diffChars = dmp.diff_main(canonLic, canonSelected);
+            dmp.diff_cleanupSemantic(diffChars);
             sims = computeDiffSimilarities(diffChars, canonLic.length, canonSelected.length);
           }
 
+          dmp.Diff_Timeout = saved;
+
+          // Token-level scoring: faster and more meaningful than character-level
           const licenseTokens = tokenizeNormalizedText(cand.licenseText);
           const tokenLevPct = tokenLevenshteinSimilarityPct(selectedTokens, licenseTokens);
           const containmentTokenPct = Math.max(0, Math.min(100, (cand.overlapCoeff || 0) * 100));
@@ -1337,19 +1318,14 @@ async function fetchLicenses(text, sendProgress, options = {}) {
             finalScore >= FINAL_THRESHOLD;
 
           if (passes) {
-            let displayDiffHtml;
-            try {
-              displayDiffHtml = generateStableDisplayDiff(cand.licenseText, originalSelected);
-            } catch {
-              displayDiffHtml = '(diff error)';
-            }
             refined.push({
               license: cand.license,
               name: cand.name,
               spdx: cand.spdx,
               source: cand.source || SOURCES.LICENSEDB,
               charSimilarity: finalScore.toFixed(2),
-              diff: displayDiffHtml,
+              diff: null,
+              _licenseText: cand.licenseText,
               diffMetrics: {
                 containment: containmentTokenPct.toFixed(2),
                 cosine: cosineTokenPct.toFixed(2),
@@ -1410,12 +1386,58 @@ async function fetchLicenses(text, sendProgress, options = {}) {
         await runDiffs(expansion);
       }
     }
+
+    dmp.Diff_Timeout = prevTimeout;
+
     console.log('[LicenseMatch][DiffStats]', {
       diffEvaluated,
       refined: refined.length,
       escalationsUsed,
       timeMs: (performance.now() - startDiffPhase).toFixed(1)
     });
+
+    // Deferred display-diff generation: render diffs for the final results
+    // after scoring is complete, so slow diffs don't eat into the scoring budget.
+    const finalResults = refined.slice(0, MAX_RESULTS);
+    const DISPLAY_DIFF_BUDGET_MS = selectedLength > 20000 ? 30000 : 15000;
+    const displayDiffStart = performance.now();
+    for (let di = 0; di < finalResults.length; di++) {
+      const result = finalResults[di];
+      if (result.diff !== null || !result._licenseText) continue;
+      const elapsed = performance.now() - displayDiffStart;
+      if (elapsed > DISPLAY_DIFF_BUDGET_MS) {
+        console.warn(`[LicenseMatch][DisplayDiff] Budget exhausted after ${di} diffs (${elapsed.toFixed(0)}ms)`);
+        break;
+      }
+      try {
+        result.diff = generateStableDisplayDiff(result._licenseText, originalSelected);
+      } catch {
+        result.diff = '(diff error)';
+      }
+      delete result._licenseText;
+      if (di % 3 === 2) await new Promise(r => setTimeout(r, 0));
+    }
+    // Second pass: generate display diffs for any remaining results
+    // that didn't get processed in the first pass (budget exhaustion).
+    const remaining = finalResults.filter(r => r.diff === null && r._licenseText);
+    if (remaining.length) {
+      console.info(`[LicenseMatch][DisplayDiff] Second pass for ${remaining.length} remaining results`);
+      for (const result of remaining) {
+        try {
+          result.diff = generateStableDisplayDiff(result._licenseText, originalSelected);
+        } catch {
+          result.diff = '(diff error)';
+        }
+        delete result._licenseText;
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+    for (const result of finalResults) {
+      if (result.diff === null) {
+        result.diff = '(diff unavailable)';
+      }
+      delete result._licenseText;
+    }
 
     await sendProgress({
       checked: checkedLicenses,
@@ -1451,8 +1473,8 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
   }
 
   if (activeScans.has(tabId)) {
-    showNotification(tabId, 'Already processing a license check. Please wait...', 'info');
-    return;
+    console.info(`[LicenseMatch][${traceId}] Tab ${tabId} already scanning; allowing new scan to queue.`);
+    activeScans.delete(tabId);
   }
 
   // Mark this tab as having an active scan
@@ -2187,7 +2209,9 @@ chrome.runtime.onStartup.addListener(async () => {
   await ensureDatabaseReady('onStartup');
 });
 
-function generateStableDisplayDiff(licenseText, selectionText) {  const displayA = prepareDisplayText(licenseText);
+function generateStableDisplayDiff(licenseText, selectionText) {
+  const originalTimeout = dmp.Diff_Timeout;
+  const displayA = prepareDisplayText(licenseText);
   const displayB = prepareDisplayText(selectionText);
 
   const normalizeForParagraphDiff = (value) => String(value ?? '')
@@ -2263,26 +2287,57 @@ function generateStableDisplayDiff(licenseText, selectionText) {  const displayA
   };
 
   const attemptDiff = () => {
-    const timeouts = [1, 4, 0];
-    const attempts = [
-      { a: paraA, b: paraB, mode: 'chars' },
-      { a: paraA, b: paraB, mode: 'lines' },
-      { a: displayA, b: displayB, mode: 'chars' },
-      { a: displayA, b: displayB, mode: 'lines' },
-      { a: canonA, b: canonB, mode: 'chars' },
-      { a: canonA, b: canonB, mode: 'lines' }
-    ];
+    // For long texts, line-level diffs via diff_linesToChars_ reduce text
+    // to ~500 chars, so timeout=0 is safe. If line-level produces degenerate
+    // results (mismatched line wrapping), fall back to char-level on
+    // paragraph-normalized text with bounded timeout.
+    const isLongText = (paraA.length > 15000 || paraB.length > 15000);
+    const timeouts = isLongText
+      ? [1, 3, 0]
+      : [Math.max(originalTimeout || 0, 1), 4, 0];
+    const attempts = isLongText
+      ? [
+          { a: paraA, b: paraB, mode: 'lines' },
+          { a: displayA, b: displayB, mode: 'lines' },
+          { a: canonA, b: canonB, mode: 'lines' },
+          { a: paraA, b: paraB, mode: 'chars' },
+        ]
+      : [
+          { a: paraA, b: paraB, mode: 'chars' },
+          { a: paraA, b: paraB, mode: 'lines' },
+          { a: displayA, b: displayB, mode: 'chars' },
+          { a: displayA, b: displayB, mode: 'lines' },
+          { a: canonA, b: canonB, mode: 'chars' },
+          { a: canonA, b: canonB, mode: 'lines' }
+        ];
 
     let best = null;
     let bestScore = -Infinity;
+    let fallback = null;
+    let fallbackScore = -Infinity;
 
     for (const { a, b, mode } of attempts) {
       for (const timeout of timeouts) {
+        // For long-text char-level, cap timeout at 3s to prevent runaway diff
+        const effectiveTimeout = (isLongText && mode === 'chars')
+          ? Math.min(timeout || 3, 3)
+          : timeout;
         try {
-          const diff = runDisplayDiff(a, b, timeout, mode);
-          if (isDegenerate(diff, a.length, b.length)) continue;
-          if (!hasEqual(diff)) continue;
-          if (!hasMeaningfulOverlap(diff, a.length, b.length)) continue;
+          const diff = runDisplayDiff(a, b, effectiveTimeout, mode);
+          const degenerate = isDegenerate(diff, a.length, b.length);
+          const hasEq = hasEqual(diff);
+          const meaningful = !degenerate && hasEq && hasMeaningfulOverlap(diff, a.length, b.length);
+
+          // Track best fallback (only requires some equal text)
+          if (!degenerate && hasEq) {
+            const score = evaluateDiffQuality(diff);
+            if (score > fallbackScore) {
+              fallback = diff;
+              fallbackScore = score;
+            }
+          }
+
+          if (!meaningful) continue;
 
           const score = evaluateDiffQuality(diff);
           if (score > bestScore) {
@@ -2296,6 +2351,20 @@ function generateStableDisplayDiff(licenseText, selectionText) {  const displayA
     }
 
     if (best) return best;
+    if (fallback) {
+      console.info('[LicenseMatch][DisplayDiff] Using fallback diff (did not pass strict quality checks)');
+      return fallback;
+    }
+
+    // Last resort: simple line-level diff with no quality gates
+    try {
+      const lastResort = runDisplayDiff(paraA, paraB, 0, 'lines');
+      if (hasEqual(lastResort)) {
+        console.info('[LicenseMatch][DisplayDiff] Using last-resort line diff');
+        return lastResort;
+      }
+    } catch { /* ignore */ }
+
     throw new Error('Diff attempts exhausted');
   };
 
@@ -2308,14 +2377,31 @@ function generateStableDisplayDiff(licenseText, selectionText) {  const displayA
       '<div class="ldiff-error">Diff rendering failed. Showing full texts.</div>' +
       `<div class="ldiff-preview"><strong>Selected text:</strong><pre>${escapeHtml(displayB)}</pre></div>` +
       `<div class="ldiff-preview"><strong>Reference text:</strong><pre>${escapeHtml(displayA)}</pre></div>`
-    );  }
+    );
+  } finally {
+    dmp.Diff_Timeout = originalTimeout;
+  }
 }
 
 function runDisplayDiff(a, b, timeout, mode = 'lines') {
-  void timeout;
-  let diff = runCoreDiff(a, b, mode);
-  diff = collapseWhitespaceOnlyReplacements(diff);
-  return diff;
+  const previous = dmp.Diff_Timeout;
+  try {
+    dmp.Diff_Timeout = timeout;
+    let diff;
+    if (mode === 'lines') {
+      const { chars1, chars2, lineArray } = dmp.diff_linesToChars_(a, b);
+      diff = dmp.diff_main(chars1, chars2, false);
+      dmp.diff_charsToLines_(diff, lineArray);
+    } else {
+      diff = dmp.diff_main(a, b, false);
+    }
+    dmp.diff_cleanupSemantic(diff);
+    dmp.diff_cleanupEfficiency(diff);
+    diff = collapseWhitespaceOnlyReplacements(diff);
+    return diff;
+  } finally {
+    dmp.Diff_Timeout = previous;
+  }
 }
 
 function collapseWhitespaceOnlyReplacements(diff) {
@@ -2396,7 +2482,3 @@ function renderDiffHtml(diff) {
   const html = sanitized.map(([op, data]) => renderBody(op, data)).join('');
   return `<pre class="ldiff-output" id="outputdiv">${html}</pre>`;
 }
-
-
-
-
