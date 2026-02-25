@@ -2526,5 +2526,5 @@ function renderDiffHtml(diff) {
   };
 
   const html = sanitized.map(([op, data]) => renderBody(op, data)).join('');
-  return `<pre class="ldiff-output" id="outputdiv">${html}</pre>`;
+  return `<pre class="ldiff-output">${html}</pre>`;
 }
