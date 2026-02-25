@@ -16,13 +16,16 @@ and [Microsoft Edge](https://microsoftedge.microsoft.com/addons/detail/licensedb
 ## Using the extension
 
 To run the diff, select text on a web page and click on the extension icon. You will have the option
-to compare against licenses, exceptions or both. Once the comparisons have
-completed, it will return the top 20 results (this can be changed in the extension options). You can
-select each result from the dropdown to see the differences and copy the license identifier by clicking
+to compare against licenses, exceptions or both. You can also select which source you want results from (SPDX, ScanCode or both) and to include/exclude deprecated licenses and exceptions. Once the comparisons have
+completed, it will return the top 10 results (this can be changed in the extension options). You can
+select each result from the dropdown to see the differences, click the link to go to the license text source and copy the license identifier by clicking
 on the copy button.
 
-Licenses and exceptions that are marked as deprecated are currently excluded from comparison
-but I would like to add the ability to include/exclude as an option in the future.
+When using both sources, the results will be sorted by highest to lowest match score or you can select "Group by source"  in the "Results grouping" dropdown to group results by SPDX and ScanCode.
 
-This has only been tested to diff text on web pages and may not work correctly for documents being
-viewed in a browser.
+This has only been tested on web pages and may not work correctly for documents being viewed in a browser.
+
+## Options
+
+In the extension options, you can set the maximum number of results to return, set the minimum match threshold, manually refresh the license database, reset the database for a complete rebuild and choose the theme (light or dark).
+

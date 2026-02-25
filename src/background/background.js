@@ -6,6 +6,9 @@ import DiffMatchPatch from "../lib/diff_match_patch.js";
 import { SCAN_DEFAULTS, SCAN_ENDPOINTS } from "../shared/scan-defaults.js";
 import { UI_DEFAULTS, BADGE_STYLES, BADGE_DEFAULT } from "../shared/ui-defaults.js";
 
+const AUTO_REFRESH_ALARM = 'licensedb-auto-refresh';
+const AUTO_REFRESH_DAYS = 14;
+
 // configuration constants
 const CONFIG = {
   scan: {
@@ -43,6 +46,10 @@ function normalizeFilter(value) {
   return Object.values(FILTER_OPTIONS).includes(value) ? value : FILTER_OPTIONS.BOTH;
 }
 
+function normalizeSource(value) {
+  return ['both', 'licensedb', 'spdx'].includes(value) ? value : 'both';
+}
+
 currentScanFilter = normalizeFilter(UI_DEFAULTS.scanFilter);
 
 const dmp = new DiffMatchPatch();
@@ -59,7 +66,7 @@ function nextScanTrace(prefix = 'scan') {
 }
 
 // Database version - increment when structure changes
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 let dbInstance = null;
 let dbOpenPromise = null;
 /**
@@ -136,7 +143,8 @@ async function isDatabaseInitialized() {
     const store = tx.objectStore('status');
     try {
       const record = await promisifyRequest(store.get('initialization'));
-      return !!(record && record.completed === true);
+      // Also check schema version so DB_VERSION bumps trigger a fresh re-init
+      return !!(record && record.completed === true && record.schemaVersion === DB_VERSION);
     } catch {
       return false;
     }
@@ -158,6 +166,7 @@ async function markDatabaseInitialized() {
     await promisifyRequest(store.put({
       id: 'initialization',
       completed: true,
+      schemaVersion: DB_VERSION,
       timestamp: new Date().toISOString()
     }));
     return true;
@@ -242,8 +251,9 @@ async function fetchSpdxIndexes(noCache = false) {
     exceptionsResp.json()
   ]);
 
-  const licenses = (licensesJson?.licenses || []).filter(item => !item?.isDeprecatedLicenseId);
-  const exceptions = (exceptionsJson?.exceptions || []).filter(item => !item?.isDeprecatedLicenseId);
+  // Store all entries (including deprecated) so users can opt in to comparing against them
+  const licenses = (licensesJson?.licenses || []);
+  const exceptions = (exceptionsJson?.exceptions || []);
 
   return {
     licenses,
@@ -306,8 +316,6 @@ async function syncSpdxDatabase({ noCache = false, progressStart = null, progres
           const vector = createTextVector(text);
           const vectorStore = db.transaction(['spdx_vectors'], 'readwrite').objectStore('spdx_vectors');
           await promisifyRequest(vectorStore.put({ entry_key: entryKey, data: vector }));
-          licenseVectorsCache = null;
-          docFreqCache = null;
         }
       } catch (error) {
         failures++;
@@ -322,6 +330,10 @@ async function syncSpdxDatabase({ noCache = false, progressStart = null, progres
       chrome.action.setBadgeText({ text: `${Math.min(99, pct)}%` });
     }
   }
+
+  // Invalidate caches once after all entries are processed, not per-entry
+  licenseVectorsCache = null;
+  docFreqCache = null;
 
   await cacheSpdxListVersion(versionInfo);
   await markSpdxInitialized(versionInfo);
@@ -355,9 +367,9 @@ async function preloadLicenseDatabase() {
     const licenseList = await fetch(SCAN_ENDPOINTS.scancodeIndexJson)
       .then(response => response.json());
 
-    // Filter out deprecated licenses
-    const licenses = licenseList.filter(obj => !obj.is_deprecated);
-    console.log(`Found ${licenses.length} non-deprecated licenses`);
+    // Store all licenses (including deprecated) so users can choose to include them
+    const licenses = licenseList;
+    console.log(`Found ${licenses.length} licenses (including deprecated)`);
 
     // Store the index
     const db = await openDatabase();
@@ -821,7 +833,9 @@ async function loadUserSettings() {
   const defaults = {
     maxResults: CONFIG.scan.maxResults,
     minSimilarityPct: CONFIG.scan.finalThresholdPct,
-    scanFilter: normalizeFilter(UI_DEFAULTS.scanFilter)
+    scanFilter: normalizeFilter(UI_DEFAULTS.scanFilter),
+    includeDeprecated: UI_DEFAULTS.includeDeprecated ?? false,
+    scanSource: normalizeSource(UI_DEFAULTS.scanSource ?? 'both')
   };
   return new Promise((resolve) => {
     try {
@@ -836,7 +850,7 @@ async function loadUserSettings() {
   });
 }
 
-async function getCombinedScanIndex(scanFilter) {
+async function getCombinedScanIndex(scanFilter, { includeDeprecated = false, scanSource = 'both' } = {}) {
   const licenseDbIndex = await fetchWithCache(
     SCAN_ENDPOINTS.scancodeIndexJson,
     'index',
@@ -852,8 +866,8 @@ async function getCombinedScanIndex(scanFilter) {
     spdxExceptions = await getMetadataEntry('spdx_exceptions_index');
   }
 
-  const fromLicenseDb = (Array.isArray(licenseDbIndex) ? licenseDbIndex : [])
-    .filter(l => !l?.is_deprecated)
+  const fromLicenseDb = scanSource === 'spdx' ? [] : (Array.isArray(licenseDbIndex) ? licenseDbIndex : [])
+    .filter(l => includeDeprecated || !l?.is_deprecated)
     .filter(l => {
       if (scanFilter === FILTER_OPTIONS.LICENSES) return !l.is_exception;
       if (scanFilter === FILTER_OPTIONS.EXCEPTIONS) return l.is_exception === true;
@@ -869,8 +883,8 @@ async function getCombinedScanIndex(scanFilter) {
       raw: l
     }));
 
-  const fromSpdxLicenses = (Array.isArray(spdxLicenses) ? spdxLicenses : [])
-    .filter(l => !l?.isDeprecatedLicenseId)
+  const fromSpdxLicenses = scanSource === 'licensedb' ? [] : (Array.isArray(spdxLicenses) ? spdxLicenses : [])
+    .filter(l => includeDeprecated || !l?.isDeprecatedLicenseId)
     .filter(() => scanFilter !== FILTER_OPTIONS.EXCEPTIONS)
     .map(l => {
       const id = l.licenseId;
@@ -885,8 +899,8 @@ async function getCombinedScanIndex(scanFilter) {
       };
     });
 
-  const fromSpdxExceptions = (Array.isArray(spdxExceptions) ? spdxExceptions : [])
-    .filter(e => !e?.isDeprecatedLicenseId)
+  const fromSpdxExceptions = scanSource === 'licensedb' ? [] : (Array.isArray(spdxExceptions) ? spdxExceptions : [])
+    .filter(e => includeDeprecated || !e?.isDeprecatedLicenseId)
     .filter(() => scanFilter !== FILTER_OPTIONS.LICENSES)
     .map(e => {
       const id = e.licenseExceptionId;
@@ -978,17 +992,19 @@ async function fetchLicenses(text, sendProgress, options = {}) {
   }
 
   try {
-    const combinedIndex = await getCombinedScanIndex(scanFilter);
+    // User settings
+    const userSettings = await loadUserSettings();
+    const MAX_RESULTS = Math.max(1, Math.min(100, parseInt(userSettings.maxResults ?? CONFIG.scan.maxResults, 10)));
+    const FINAL_THRESHOLD = Math.max(0, Math.min(100, Number(userSettings.minSimilarityPct ?? CONFIG.scan.finalThresholdPct)));
+    const includeDeprecated = !!(options.includeDeprecated ?? userSettings.includeDeprecated);
+    const scanSource = normalizeSource(options.scanSource ?? userSettings.scanSource ?? 'both');
+
+    const combinedIndex = await getCombinedScanIndex(scanFilter, { includeDeprecated, scanSource });
     if (!combinedIndex.length) {
       console.warn('[LicenseMatch] No entries match filter', scanFilter);
       return [];
     }
     const licenses = combinedIndex;
-
-    // User settings
-    const userSettings = await loadUserSettings();
-    const MAX_RESULTS = Math.max(1, Math.min(100, parseInt(userSettings.maxResults ?? CONFIG.scan.maxResults, 10)));
-    const FINAL_THRESHOLD = Math.max(0, Math.min(100, Number(userSettings.minSimilarityPct ?? CONFIG.scan.finalThresholdPct)));
 
     // Internal knobs
     const BASE_APPROX_THRESHOLD = CONFIG.scan.baseApproxThresholdPct;
@@ -1323,6 +1339,7 @@ async function fetchLicenses(text, sendProgress, options = {}) {
               name: cand.name,
               spdx: cand.spdx,
               source: cand.source || SOURCES.LICENSEDB,
+              deprecated: !!(cand.entry?.raw?.is_deprecated || cand.entry?.raw?.isDeprecatedLicenseId),
               charSimilarity: finalScore.toFixed(2),
               diff: null,
               _licenseText: cand.licenseText,
@@ -1396,57 +1413,18 @@ async function fetchLicenses(text, sendProgress, options = {}) {
       timeMs: (performance.now() - startDiffPhase).toFixed(1)
     });
 
-    // Deferred display-diff generation: render diffs for the final results
-    // after scoring is complete, so slow diffs don't eat into the scoring budget.
+    // Return results with _licenseText intact; display diffs will be generated
+    // incrementally in processLicenseCheck so results can be streamed to the UI.
     const finalResults = refined.slice(0, MAX_RESULTS);
-    const DISPLAY_DIFF_BUDGET_MS = selectedLength > 20000 ? 30000 : 15000;
-    const displayDiffStart = performance.now();
-    for (let di = 0; di < finalResults.length; di++) {
-      const result = finalResults[di];
-      if (result.diff !== null || !result._licenseText) continue;
-      const elapsed = performance.now() - displayDiffStart;
-      if (elapsed > DISPLAY_DIFF_BUDGET_MS) {
-        console.warn(`[LicenseMatch][DisplayDiff] Budget exhausted after ${di} diffs (${elapsed.toFixed(0)}ms)`);
-        break;
-      }
-      try {
-        result.diff = generateStableDisplayDiff(result._licenseText, originalSelected);
-      } catch {
-        result.diff = '(diff error)';
-      }
-      delete result._licenseText;
-      if (di % 3 === 2) await new Promise(r => setTimeout(r, 0));
-    }
-    // Second pass: generate display diffs for any remaining results
-    // that didn't get processed in the first pass (budget exhaustion).
-    const remaining = finalResults.filter(r => r.diff === null && r._licenseText);
-    if (remaining.length) {
-      console.info(`[LicenseMatch][DisplayDiff] Second pass for ${remaining.length} remaining results`);
-      for (const result of remaining) {
-        try {
-          result.diff = generateStableDisplayDiff(result._licenseText, originalSelected);
-        } catch {
-          result.diff = '(diff error)';
-        }
-        delete result._licenseText;
-        await new Promise(r => setTimeout(r, 0));
-      }
-    }
-    for (const result of finalResults) {
-      if (result.diff === null) {
-        result.diff = '(diff unavailable)';
-      }
-      delete result._licenseText;
-    }
 
     await sendProgress({
       checked: checkedLicenses,
       total: totalLicenses,
       promising: approxCandidates.length,
-      message: refined.length ? `Completed with ${refined.length} match(es).` : 'Completed. No significant matches.'
+      message: refined.length ? `Found ${refined.length} match(es). Generating diffs...` : 'Completed. No significant matches.'
     });
 
-    return refined.slice(0, MAX_RESULTS);
+    return finalResults;
   } catch (err) {
     console.error('Error in fetchLicenses:', err);
     throw err;
@@ -1473,8 +1451,9 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
   }
 
   if (activeScans.has(tabId)) {
-    console.info(`[LicenseMatch][${traceId}] Tab ${tabId} already scanning; allowing new scan to queue.`);
-    activeScans.delete(tabId);
+    console.info(`[LicenseMatch][${traceId}] Tab ${tabId} already has an active scan; ignoring duplicate request.`);
+    showNotification(tabId, 'A scan is already in progress. Please wait.', 'warning');
+    return;
   }
 
   // Mark this tab as having an active scan
@@ -1523,11 +1502,36 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
         matches: matches.length,
         top: matches[0]?.license
       });
-      // Report the matches to the content script
+      // Send preliminary results immediately (without diffs) so the UI can show
+      // ranked matches without waiting for all diffs to be generated.
       await sendMessageToTab(tabId, {
         action: 'showResults',
         matches
       });
+
+      // Generate and stream display diffs one at a time
+      for (const result of matches) {
+        if (!result._licenseText) continue;
+        const matchKey = `${result.source || 'licensedb'}:${result.license}`;
+        let diff;
+        try {
+          diff = generateStableDisplayDiff(result._licenseText, selectedText, 4000);
+        } catch {
+          diff = '(diff error)';
+        }
+        delete result._licenseText;
+        try {
+          await sendMessageToTab(tabId, {
+            action: 'updateMatchDiff',
+            matchKey,
+            diff
+          });
+        } catch (sendErr) {
+          console.warn(`[LicenseMatch][${traceId}] Could not stream diff for ${matchKey}:`, sendErr.message);
+        }
+        // Yield to keep the service worker responsive between diffs
+        await new Promise(r => setTimeout(r, 0));
+      }
     } else {
       await sendMessageToTab(tabId, {
         action: 'showError',
@@ -1632,16 +1636,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(error => sendResponse({ error: error.message || 'Unknown error' }));
     return true; // Keep port open for async response
   } else if (message.action === 'startScanWithFilter') {
-    const chosenFilter = normalizeFilter(message.filter);
+    // If filter is omitted, preserve the current stored filter
+    const chosenFilter = normalizeFilter(message.filter != null ? message.filter : currentScanFilter);
     const traceId = nextScanTrace('popup');
     currentScanFilter = chosenFilter;
     console.info(`[LicenseMatch][${traceId}] startScanWithFilter received`, { filter: chosenFilter });
 
     (async () => {
       try {
+        const storageUpdate = { scanFilter: chosenFilter };
+        if ('includeDeprecated' in message) {
+          storageUpdate.includeDeprecated = !!message.includeDeprecated;
+        }
+        if ('scanSource' in message) {
+          storageUpdate.scanSource = normalizeSource(message.scanSource);
+        }
         await new Promise((resolve) => {
           try {
-            chrome.storage?.sync?.set({ scanFilter: chosenFilter }, () => resolve(true));
+            chrome.storage?.sync?.set(storageUpdate, () => resolve(true));
           } catch {
             resolve(true);
           }
@@ -1734,12 +1746,14 @@ async function getDatabaseInfo() {
 }
 
 // Function to get LicenseDB list version
-async function getLicenseDbVersion() {
+async function getLicenseDbVersion(force = false) {
   try {
-    const cached = await getCachedLicenseDbVersion();
-    if (cached && cached.timestamp) {
-      const ageMs = Date.now() - new Date(cached.timestamp).getTime();
-      if (ageMs < 24 * 60 * 60 * 1000) return cached.version || null; // cache < 1 day
+    if (!force) {
+      const cached = await getCachedLicenseDbVersion();
+      if (cached && cached.timestamp) {
+        const ageMs = Date.now() - new Date(cached.timestamp).getTime();
+        if (ageMs < 24 * 60 * 60 * 1000) return cached.version || null; // cache < 1 day
+      }
     }
     // Preferred: parse the user-facing footer text from index.html,
     // e.g. "Generated with ScanCode toolkit 32.5.0 on 2026-01-22."
@@ -1747,11 +1761,14 @@ async function getLicenseDbVersion() {
       const htmlResp = await fetch(SCAN_ENDPOINTS.scancodeIndexHtml, { cache: 'no-cache' });
       if (htmlResp.ok) {
         const html = await htmlResp.text();
-        const match = html.match(/Generated\s+with\s+ScanCode\s+toolkit\s+([0-9]+(?:\.[0-9]+)*)\s+on\s+(\d{4}-\d{2}-\d{2})/i);
+        // Strip HTML tags and collapse whitespace before matching, so inline
+        // elements (e.g. <a>, <b>) around the version or date don't break the regex
+        const plainText = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+        const match = plainText.match(/Generated\s+with\s+ScanCode\s+toolkit\s+([0-9]+(?:\.[0-9]+)*)\s+on\s+(\d{4}-\d{2}-\d{2})/i);
         if (match) {
           const toolkitVersion = match[1];
           const generatedDate = match[2];
-          const version = `ScanCode toolkit ${toolkitVersion} (${generatedDate})`;
+          const version = `${toolkitVersion} (${generatedDate})`;
           await cacheLicenseDbVersion(version);
           return version;
         }
@@ -1801,12 +1818,14 @@ async function cacheLicenseDbVersion(version) {
 }
 
 // Function to get SPDX list version
-async function getSpdxListVersion() {
+async function getSpdxListVersion(force = false) {
   try {
-    const cached = await getCachedSpdxListVersion();
-    if (cached?.timestamp) {
-      const ageMs = Date.now() - new Date(cached.timestamp).getTime();
-      if (ageMs < 24 * 60 * 60 * 1000) return cached.version || null;
+    if (!force) {
+      const cached = await getCachedSpdxListVersion();
+      if (cached?.timestamp) {
+        const ageMs = Date.now() - new Date(cached.timestamp).getTime();
+        if (ageMs < 24 * 60 * 60 * 1000) return cached.version || null;
+      }
     }
 
     const { versionInfo } = await fetchSpdxIndexes(true);
@@ -1883,9 +1902,9 @@ async function forceUpdateDatabase() {
 
     const licenseList = await response.json();
 
-    // Filter out deprecated licenses
-    const licenses = licenseList.filter(obj => !obj.is_deprecated);
-    console.log(`Found ${licenses.length} non-deprecated licenses`);
+    // Store all licenses (including deprecated) so users can choose to include them
+    const licenses = licenseList;
+    console.log(`Found ${licenses.length} licenses (including deprecated)`);
 
     // Store the updated index
     const db = await openDatabase();
@@ -1971,8 +1990,8 @@ async function forceUpdateDatabase() {
     await markDatabaseInitialized();
 
     // Also update the license list versions when forcing an update
-    await getLicenseDbVersion();
-    await getSpdxListVersion();
+    await getLicenseDbVersion(true);
+    await getSpdxListVersion(true);
 
     // Final success
     sendProgressUpdate(100, 'Database update complete', true);
@@ -2203,14 +2222,37 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     updateBadge('green');
   }
   await ensureDatabaseReady('onInstalled');
+  // Register periodic auto-refresh alarm (only if not already set)
+  const existing = await chrome.alarms.get(AUTO_REFRESH_ALARM);
+  if (!existing) {
+    chrome.alarms.create(AUTO_REFRESH_ALARM, { periodInMinutes: AUTO_REFRESH_DAYS * 24 * 60 });
+    console.log(`[LicenseMatch] Auto-refresh alarm registered (every ${AUTO_REFRESH_DAYS} days)`);
+  }
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await ensureDatabaseReady('onStartup');
+  // Re-register alarm in case it was cleared (e.g. browser profile reset)
+  const existing = await chrome.alarms.get(AUTO_REFRESH_ALARM);
+  if (!existing) {
+    chrome.alarms.create(AUTO_REFRESH_ALARM, { periodInMinutes: AUTO_REFRESH_DAYS * 24 * 60 });
+    console.log(`[LicenseMatch] Auto-refresh alarm re-registered (every ${AUTO_REFRESH_DAYS} days)`);
+  }
 });
 
-function generateStableDisplayDiff(licenseText, selectionText) {
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== AUTO_REFRESH_ALARM) return;
+  console.log('[LicenseMatch] Auto-refresh alarm fired — updating database');
+  try {
+    await forceUpdateDatabase();
+  } catch (err) {
+    console.error('[LicenseMatch] Auto-refresh failed:', err);
+  }
+});
+
+function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
   const originalTimeout = dmp.Diff_Timeout;
+  const wallStart = performance.now();
   const displayA = prepareDisplayText(licenseText);
   const displayB = prepareDisplayText(selectionText);
 
@@ -2317,6 +2359,10 @@ function generateStableDisplayDiff(licenseText, selectionText) {
     let fallbackScore = -Infinity;
 
     for (const { a, b, mode } of attempts) {
+      if ((performance.now() - wallStart) > maxMs) {
+        console.warn(`[LicenseMatch][DisplayDiff] Wall-clock cap (${maxMs}ms) reached; stopping attempts early`);
+        break;
+      }
       for (const timeout of timeouts) {
         // For long-text char-level, cap timeout at 3s to prevent runaway diff
         const effectiveTimeout = (isLongText && mode === 'chars')

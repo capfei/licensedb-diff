@@ -1,6 +1,8 @@
 export const UI_DEFAULTS = Object.freeze({
   theme: 'light',
-  scanFilter: 'both'
+  scanFilter: 'both',
+  includeDeprecated: false,
+  scanSource: 'both'
 });
 
 export const BADGE_STYLES = Object.freeze({

@@ -5,17 +5,35 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>License Diff</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 12px; width: 220px; }
+    body { font-family: system-ui, sans-serif; margin: 12px; width: 220px; background-color: #ffffff; color: #333333; }
     fieldset { border: none; padding: 0; margin: 0 0 8px 0; }
+    legend { font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin-bottom: 4px; padding: 0; }
     label { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-    button { width: 100%; padding: 6px; margin-top: 8px; }
+    button { width: 100%; padding: 6px; margin-top: 8px; background-color: #4CAF50; color: #000000; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
+    button:hover { background-color: #3d8b3d; }
+
+    body.theme-dark { background-color: #0d1117; color: #f0f6fc; }
+    body.theme-dark legend { color: #8b949e; }
+    body.theme-dark button { background-color: #238636; color: #ffffff; }
+    body.theme-dark button:hover { background-color: #2ea043; }
   </style>
 </head>
 <body>
   <fieldset id="filter-form">
+    <legend>Compare</legend>
     <label><input type="radio" name="scanFilter" value="licenses" />Licenses only</label>
     <label><input type="radio" name="scanFilter" value="exceptions" />Exceptions only</label>
     <label><input type="radio" name="scanFilter" value="both" />Licenses + Exceptions</label>
+  </fieldset>
+  <fieldset id="deprecated-form">
+    <legend>Filters</legend>
+    <label><input type="checkbox" id="include-deprecated" />Include deprecated</label>
+  </fieldset>
+  <fieldset id="source-form">
+    <legend>Sources</legend>
+    <label><input type="radio" name="scanSource" value="licensedb" />ScanCode only</label>
+    <label><input type="radio" name="scanSource" value="spdx" />SPDX only</label>
+    <label><input type="radio" name="scanSource" value="both" />Both sources</label>
   </fieldset>
   <button id="run-scan" type="button">Run comparison</button>
   <script type="module" src="popup.js"></script>

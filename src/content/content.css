@@ -216,7 +216,7 @@
 }
 
 #license-diff-url a {
-  color: #439843;
+  color: #2d682d;
   text-decoration: none;
   font-weight: 500;
   transition: all 0.2s ease;
@@ -224,8 +224,8 @@
 }
 
 #license-diff-url a:hover {
-  color: #2d682d;
-  border-bottom: 1px dotted #2d682d;
+  color: #1a3d1a;
+  border-bottom: 1px dotted #1a3d1a;
 }
 
 #license-diff-display {
@@ -250,6 +250,13 @@
   margin: 0;
   word-break: normal;
   overflow-wrap: break-word;
+}
+
+#license-diff-display .ldiff-pending {
+  padding: 12px;
+  color: #6b7280;
+  font-style: italic;
+  text-align: center;
 }
 
 /* Custom scrollbar for the diff display */
@@ -397,6 +404,20 @@
   border: 1px solid rgba(33, 150, 243, 0.35);
 }
 
+.deprecated-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  background-color: rgba(245, 158, 11, 0.15);
+  color: #92400e;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
 /* Theme control row */
 #license-diff-theme {
   display: flex;
@@ -454,12 +475,12 @@
 }
 
 #license-diff-ui.ld-theme-light #license-diff-url a {
-  color: #439843 !important;
+  color: #2d682d !important;
 }
 
 #license-diff-ui.ld-theme-light #license-diff-url a:hover {
-  color: #2d682d !important;
-  border-bottom: 1px dotted #2d682d !important;
+  color: #1a3d1a !important;
+  border-bottom: 1px dotted #1a3d1a !important;
 }
 
 #license-diff-ui.ld-theme-light .source-badge.source-licensedb {
@@ -472,6 +493,12 @@
   background-color: rgba(33, 150, 243, 0.15) !important;
   color: #1565c0 !important;
   border-color: rgba(33, 150, 243, 0.35) !important;
+}
+
+#license-diff-ui.ld-theme-light .deprecated-badge {
+  background-color: rgba(245, 158, 11, 0.15) !important;
+  color: #92400e !important;
+  border-color: rgba(245, 158, 11, 0.35) !important;
 }
 
 #license-diff-ui.ld-theme-light .license-diff-notification.info {
@@ -570,6 +597,12 @@
   border-color: rgba(68, 147, 248, 0.45) !important;
 }
 
+#license-diff-ui.ld-theme-dark .deprecated-badge {
+  background-color: rgba(245, 158, 11, 0.18) !important;
+  color: #fcd34d !important;
+  border-color: rgba(245, 158, 11, 0.4) !important;
+}
+
 #license-diff-ui.ld-theme-dark #license-diff-progress-container {
   background-color: #212830 !important;
 }
@@ -598,7 +631,7 @@
 
 #license-diff-ui.ld-theme-dark .license-diff-notification.success {
   background-color: #238636 !important;
-  color: #3fb950 !important;
+  color: #ffffff !important;
   border-left: 4px solid #34d399 !important;
 }
 
@@ -625,4 +658,8 @@
 
 #license-diff-ui.ld-theme-dark #license-diff-display::-webkit-scrollbar-thumb:hover {
   background-color: #64748b !important;
+}
+
+#license-diff-ui.ld-theme-dark #license-diff-display .ldiff-pending {
+  color: #9ca3af !important;
 }

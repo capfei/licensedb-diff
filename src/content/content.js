@@ -192,11 +192,12 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
 
       const appendOption = (m, targetParent = dropdown) => {
         const pct = prettyPercent(m.charSimilarity);
+        const deprecatedSuffix = m.deprecated ? ' [deprecated]' : '';
         const opt = createEl('option');
         opt.value = m.matchKey;
         opt.textContent = pct
-          ? `${m.license} • ${pct} • ${m.sourceLabel || getSourceLabel(m.source)}`
-          : `${m.license} • ${m.sourceLabel || getSourceLabel(m.source)}`;
+          ? `${m.license} • ${pct} • ${m.sourceLabel || getSourceLabel(m.source)}${deprecatedSuffix}`
+          : `${m.license} • ${m.sourceLabel || getSourceLabel(m.source)}${deprecatedSuffix}`;
         targetParent.appendChild(opt);
       };
 
@@ -213,7 +214,8 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
         matches.forEach(m => appendOption(m, dropdown));
       }
 
-      setDisplay(groupingRow, matches.length ? 'flex' : 'none');
+      const uniqueSources = new Set(matches.map(m => m.source || 'licensedb'));
+      setDisplay(groupingRow, (matches.length && uniqueSources.size > 1) ? 'flex' : 'none');
 
       if (matches.length) {
         if (selectedMatchKey && matches.some(m => m.matchKey === selectedMatchKey)) {
@@ -351,6 +353,8 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
             removeClass(progressEl, 'no-transition');
           }
 
+          setDisplay(status, 'block');
+          setDisplay(progressBar, 'block');
           status.textContent = 'Starting license comparison...';
           matches = [];
 
@@ -385,6 +389,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
 
             m.link = `<a href="${targetUrl}" target="_blank">${m.name}</a>
               <span class="source-badge ${getSourceClass(m.source)}">${sourceLabel}</span>
+              ${m.deprecated ? '<span class="deprecated-badge">deprecated</span>' : ''}
               <span class="spdx-container">
                 <span class="spdx-id">(${m.spdx})</span>
                 <button class="copy-spdx-button" data-spdx="${m.spdx}" title="Copy ID">
@@ -411,7 +416,9 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
               }, { passive: false });
             }
 
-            safeSetHTML(diffContainer, sel.diff);
+            safeSetHTML(diffContainer, sel.diff !== null
+              ? sel.diff
+              : '<div class="ldiff-pending">Generating diff\u2026</div>');
             updateDiffSizing();
             setupCopyButtons();
           };
@@ -424,8 +431,32 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
             dropdown.onchange();
           }
 
-          status.textContent = 'Comparison complete!';
+          const hasPendingDiffs = matches.some(m => m.diff === null);
+          if (hasPendingDiffs) {
+            status.textContent = 'Results ready. Generating diffs...';
+          } else {
+            setDisplay(status, 'none');
+            setDisplay(progressBar, 'none');
+          }
           updateDiffSizing();
+          sendResponse({ success: true });
+        } else if (message.action === 'updateMatchDiff') {
+          const match = matches.find(m => m.matchKey === message.matchKey);
+          if (match) {
+            match.diff = message.diff;
+            // If this match is currently selected in the dropdown, refresh its diff view
+            if (dropdown.value === message.matchKey) {
+              safeSetHTML(diffContainer, match.diff !== null
+                ? match.diff
+                : '<div class="ldiff-pending">Generating diff\u2026</div>');
+              updateDiffSizing();
+            }
+            // Hide status and progress bar when all diffs have arrived
+            if (matches.every(m => m.diff !== null)) {
+              setDisplay(status, 'none');
+              setDisplay(progressBar, 'none');
+            }
+          }
           sendResponse({ success: true });
         } else if (message.action === 'showError') {
           removeClass(progressEl, 'animating');
