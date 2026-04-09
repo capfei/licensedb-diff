@@ -5,6 +5,8 @@ const DEPRECATED_DEFAULT = UI_DEFAULTS.includeDeprecated;
 const SCAN_SOURCE_DEFAULT = UI_DEFAULTS.scanSource;
 const THEME_DEFAULT = UI_DEFAULTS.theme;
 
+const INCLUDE_RULES_DEFAULT = UI_DEFAULTS.includeRules;
+
 function storageGet(defaults) {
   return new Promise((resolve) => {
     try {
@@ -29,10 +31,11 @@ function storageSet(obj) {
 }
 
 async function init() {
-  const { scanFilter, includeDeprecated, scanSource, theme } = await storageGet({
+  const { scanFilter, includeDeprecated, scanSource, includeRules, theme } = await storageGet({
     scanFilter: FILTER_DEFAULT,
     includeDeprecated: DEPRECATED_DEFAULT,
     scanSource: SCAN_SOURCE_DEFAULT,
+    includeRules: INCLUDE_RULES_DEFAULT,
     theme: THEME_DEFAULT
   });
 
@@ -50,6 +53,12 @@ async function init() {
     await storageSet({ includeDeprecated: deprecatedCheckbox.checked });
   });
 
+  const rulesCheckbox = document.getElementById('include-rules');
+  rulesCheckbox.checked = includeRules !== false;
+  rulesCheckbox.addEventListener('change', async () => {
+    await storageSet({ includeRules: rulesCheckbox.checked });
+  });
+
   document.querySelectorAll('input[name="scanSource"]').forEach((input) => {
     input.checked = input.value === scanSource;
     input.addEventListener('change', async () => {
@@ -65,6 +74,7 @@ async function init() {
         action: 'startScanWithFilter',
         filter: selected,
         includeDeprecated: deprecatedCheckbox.checked,
+        includeRules: rulesCheckbox.checked,
         scanSource: selectedSource
       });
     } catch (err) {

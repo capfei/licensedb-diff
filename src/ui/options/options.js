@@ -130,6 +130,8 @@ async function loadDatabaseInfo() {
       document.getElementById('license-count').textContent = info.licenseCount || 'Not available';
       document.getElementById('licensedb-version').textContent = info.licenseDbVersion || 'Not available';
       document.getElementById('spdx-version').textContent = info.spdxListVersion || 'Not available';
+      document.getElementById('rules-count').textContent = info.rulesCount || '0';
+      document.getElementById('rules-version').textContent = info.rulesVersion || 'Not available';
       
       const dbStatus = document.getElementById('db-status');
       if (info.isInitialized) {

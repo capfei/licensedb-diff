@@ -35,7 +35,7 @@ function updateBadge(color) {
 }
 
 const FILTER_OPTIONS = Object.freeze({ LICENSES: 'licenses', EXCEPTIONS: 'exceptions', BOTH: 'both' });
-const SOURCES = Object.freeze({ LICENSEDB: 'licensedb', SPDX: 'spdx' });
+const SOURCES = Object.freeze({ LICENSEDB: 'licensedb', SPDX: 'spdx', RULES: 'scancode-rule' });
 const SPDX_URLS = Object.freeze({
   licenses: SCAN_ENDPOINTS.spdxLicensesJson,
   exceptions: SCAN_ENDPOINTS.spdxExceptionsJson
@@ -66,7 +66,7 @@ function nextScanTrace(prefix = 'scan') {
 }
 
 // Database version - increment when structure changes
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 let dbInstance = null;
 let dbOpenPromise = null;
 /**
@@ -99,6 +99,12 @@ function openDatabase() {
       }
       if (!db.objectStoreNames.contains('spdx_vectors')) {
         db.createObjectStore('spdx_vectors', { keyPath: 'entry_key' });
+      }
+      if (!db.objectStoreNames.contains('rules')) {
+        db.createObjectStore('rules', { keyPath: 'rule_id' });
+      }
+      if (!db.objectStoreNames.contains('rule_vectors')) {
+        db.createObjectStore('rule_vectors', { keyPath: 'rule_id' });
       }
     };
 
@@ -350,6 +356,102 @@ async function ensureSpdxDataInitialized() {
   return true;
 }
 
+// ── ScanCode Toolkit Rules ──────────────────────────────────────────────
+
+async function isRulesInitialized() {
+  const record = await getStoreRecord('status', 'rules_initialization');
+  return !!(record && record.completed === true);
+}
+
+async function markRulesInitialized(versionInfo = {}) {
+  await putStoreRecord('status', {
+    id: 'rules_initialization',
+    completed: true,
+    timestamp: new Date().toISOString(),
+    ...versionInfo
+  });
+}
+
+async function syncRulesDatabase({ noCache = false } = {}) {
+  console.log('Starting ScanCode rules sync...');
+  const fetchOptions = noCache ? { cache: 'no-cache' } : undefined;
+  const resp = await fetch(SCAN_ENDPOINTS.rulesIndexJson, fetchOptions);
+  if (!resp.ok) throw new Error(`Failed to fetch rules index: ${resp.statusText}`);
+  const data = await resp.json();
+
+  const rules = Array.isArray(data.rules) ? data.rules : [];
+  console.log(`Fetched ${rules.length} rules (version ${data.version}, commit ${data.sourceCommit?.slice(0, 8)})`);
+
+  // Store the lightweight index (without text) for getCombinedScanIndex
+  const rulesIndexEntries = rules.map(r => ({
+    id: r.id,
+    license_key: r.license_key,
+    name: r.name,
+    spdx_license_key: r.spdx_license_key,
+    category: r.category,
+    is_deprecated: r.is_deprecated || false,
+    relevance: r.relevance
+  }));
+  await setMetadataEntry('rules_index', rulesIndexEntries);
+
+  // Store full rule data + vectors in IndexedDB
+  const db = await openDatabase();
+  const batchSize = 100;
+  let processed = 0;
+  let failures = 0;
+
+  for (let i = 0; i < rules.length; i += batchSize) {
+    const batch = rules.slice(i, Math.min(i + batchSize, rules.length));
+    for (const rule of batch) {
+      try {
+        const storeKey = `rule:${rule.id}`;
+        const text = normalizeLicenseText(rule.text || '');
+        const ruleData = {
+          id: rule.id,
+          license_key: rule.license_key,
+          name: rule.name,
+          spdx_license_key: rule.spdx_license_key,
+          text
+        };
+
+        const ruleTx = db.transaction(['rules'], 'readwrite');
+        await promisifyRequest(ruleTx.objectStore('rules').put({ rule_id: storeKey, data: ruleData }));
+
+        if (text) {
+          const vector = createTextVector(text);
+          const vecTx = db.transaction(['rule_vectors'], 'readwrite');
+          await promisifyRequest(vecTx.objectStore('rule_vectors').put({ rule_id: storeKey, data: vector }));
+        }
+      } catch (err) {
+        failures++;
+        console.error(`Error processing rule ${rule.id}:`, err);
+      }
+    }
+    processed += batch.length;
+  }
+
+  // Invalidate caches
+  licenseVectorsCache = null;
+  docFreqCache = null;
+
+  await markRulesInitialized({
+    version: data.version,
+    sourceCommit: data.sourceCommit,
+    rulesCount: rules.length
+  });
+
+  console.log(`Rules sync complete. Processed ${processed} rules with ${failures} failures.`);
+}
+
+async function ensureRulesDataInitialized() {
+  const initialized = await isRulesInitialized();
+  if (initialized) return true;
+
+  console.log('Rules data not initialized. Starting sync...');
+  await syncRulesDatabase({ noCache: false });
+  return true;
+}
+
 async function preloadLicenseDatabase() {
   try {
     // Check if already initialized
@@ -357,6 +459,7 @@ async function preloadLicenseDatabase() {
     if (isInitialized) {
       console.log('License database already initialized');
       await ensureSpdxDataInitialized();
+      await ensureRulesDataInitialized().catch(err => console.warn('Rules init skipped:', err));
       return true;
     }
 
@@ -430,6 +533,9 @@ async function preloadLicenseDatabase() {
 
     // Load SPDX licenses/exceptions as part of initial bootstrap
     await syncSpdxDatabase({ noCache: false });
+
+    // Load ScanCode Toolkit rules
+    await syncRulesDatabase({ noCache: false }).catch(err => console.warn('Rules sync skipped during init:', err));
 
     // Record the update timestamp when initializing
     await recordUpdateTimestamp();
@@ -745,6 +851,9 @@ async function loadAllVectors() {
     if (db.objectStoreNames.contains('spdx_vectors')) {
       await loadStoreVectors('spdx_vectors');
     }
+    if (db.objectStoreNames.contains('rule_vectors')) {
+      await loadStoreVectors('rule_vectors');
+    }
   } catch (e) {
     console.warn('Vector preload skipped due to error:', e);
   }
@@ -835,7 +944,8 @@ async function loadUserSettings() {
     minSimilarityPct: CONFIG.scan.finalThresholdPct,
     scanFilter: normalizeFilter(UI_DEFAULTS.scanFilter),
     includeDeprecated: UI_DEFAULTS.includeDeprecated ?? false,
-    scanSource: normalizeSource(UI_DEFAULTS.scanSource ?? 'both')
+    scanSource: normalizeSource(UI_DEFAULTS.scanSource ?? 'both'),
+    includeRules: UI_DEFAULTS.includeRules ?? true
   };
   return new Promise((resolve) => {
     try {
@@ -850,7 +960,7 @@ async function loadUserSettings() {
   });
 }
 
-async function getCombinedScanIndex(scanFilter, { includeDeprecated = false, scanSource = 'both' } = {}) {
+async function getCombinedScanIndex(scanFilter, { includeDeprecated = false, scanSource = 'both', includeRules = true } = {}) {
   const licenseDbIndex = await fetchWithCache(
     SCAN_ENDPOINTS.scancodeIndexJson,
     'index',
@@ -915,10 +1025,49 @@ async function getCombinedScanIndex(scanFilter, { includeDeprecated = false, sca
       };
     });
 
-  return [...fromLicenseDb, ...fromSpdxLicenses, ...fromSpdxExceptions].filter(item => item.key);
+  // ScanCode Toolkit rules (variant license texts observed in the wild)
+  let fromRules = [];
+  if (includeRules && scanSource !== 'spdx') {
+    const rulesIndex = await getMetadataEntry('rules_index');
+    if (Array.isArray(rulesIndex)) {
+      fromRules = rulesIndex
+        .filter(r => includeDeprecated || !r.is_deprecated)
+        .filter(r => {
+          // Rules don't have an is_exception flag; include them when scanning licenses or both
+          if (scanFilter === FILTER_OPTIONS.EXCEPTIONS) return false;
+          return true;
+        })
+        .map(r => ({
+          source: SOURCES.RULES,
+          key: r.id,
+          storeKey: `rule:${r.id}`,
+          isException: false,
+          spdx: r.spdx_license_key || r.license_key,
+          licenseKey: r.license_key,
+          raw: r
+        }));
+    }
+  }
+
+  return [...fromLicenseDb, ...fromSpdxLicenses, ...fromSpdxExceptions, ...fromRules].filter(item => item.key);
 }
 
 async function loadScanEntryData(entry) {
+  if (entry.source === SOURCES.RULES) {
+    const existing = await getStoreRecord('rules', entry.storeKey);
+    if (existing?.data?.text) {
+      const ruleId = entry.key; // e.g. "bsd-new_1"
+      return {
+        key: entry.storeKey,
+        license: ruleId,
+        name: `${existing.data.name || entry.raw?.name || entry.raw?.license_key || ruleId} (${ruleId})`,
+        spdx: entry.spdx || entry.raw?.spdx_license_key || entry.raw?.license_key || ruleId,
+        text: normalizeLicenseText(existing.data.text)
+      };
+    }
+    return null;
+  }
+
   if (entry.source === SOURCES.LICENSEDB) {
     const data = await fetchWithCache(entry.detailUrl, entry.storeKey, 'licenses').catch(() => null);
     if (!data) return null;
@@ -998,8 +1147,9 @@ async function fetchLicenses(text, sendProgress, options = {}) {
     const FINAL_THRESHOLD = Math.max(0, Math.min(100, Number(userSettings.minSimilarityPct ?? CONFIG.scan.finalThresholdPct)));
     const includeDeprecated = !!(options.includeDeprecated ?? userSettings.includeDeprecated);
     const scanSource = normalizeSource(options.scanSource ?? userSettings.scanSource ?? 'both');
+    const includeRules = !!(options.includeRules ?? userSettings.includeRules ?? true);
 
-    const combinedIndex = await getCombinedScanIndex(scanFilter, { includeDeprecated, scanSource });
+    const combinedIndex = await getCombinedScanIndex(scanFilter, { includeDeprecated, scanSource, includeRules });
     if (!combinedIndex.length) {
       console.warn('[LicenseMatch] No entries match filter', scanFilter);
       return [];
@@ -1353,7 +1503,9 @@ async function fetchLicenses(text, sendProgress, options = {}) {
               score: finalScore.toFixed(2),
               link: (cand.source === SOURCES.SPDX)
                 ? `${SCAN_ENDPOINTS.spdxLicensesBase}/${cand.license}.html`
-                : `${SCAN_ENDPOINTS.scancodeBase}/${cand.license}.html`
+                : (cand.source === SOURCES.RULES)
+                  ? `${SCAN_ENDPOINTS.scancodeRulesBase}/${cand.license}.RULE`
+                  : `${SCAN_ENDPOINTS.scancodeBase}/${cand.license}.html`
             });
           }
         } catch (e) {
@@ -1651,6 +1803,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if ('scanSource' in message) {
           storageUpdate.scanSource = normalizeSource(message.scanSource);
         }
+        if ('includeRules' in message) {
+          storageUpdate.includeRules = !!message.includeRules;
+        }
         await new Promise((resolve) => {
           try {
             chrome.storage?.sync?.set(storageUpdate, () => resolve(true));
@@ -1728,16 +1883,43 @@ async function getDatabaseInfo() {
       console.error('Error getting license count:', error);
     }
 
+    // Get rules count
+    let rulesCount = 0;
+    try {
+      if (db.objectStoreNames.contains('rules')) {
+        const rulesTx = db.transaction(['rules'], 'readonly');
+        const rulesStore = rulesTx.objectStore('rules');
+        const rulesCountRequest = rulesStore.count();
+        rulesCount = await new Promise((resolve) => {
+          rulesCountRequest.onsuccess = () => resolve(rulesCountRequest.result);
+          rulesCountRequest.onerror = () => resolve(0);
+        });
+      }
+    } catch (error) {
+      console.error('Error getting rules count:', error);
+    }
+
     // Get license list versions
     let licenseDbVersion = await getLicenseDbVersion();
     let spdxListVersion = await getSpdxListVersion();
+
+    // Get rules version info
+    let rulesVersion = null;
+    try {
+      const rulesStatus = await getStoreRecord('status', 'rules_initialization');
+      if (rulesStatus?.version) {
+        rulesVersion = rulesStatus.version;
+      }
+    } catch { /* ignore */ }
 
     return {
       isInitialized,
       lastUpdate,
       licenseCount,
+      rulesCount,
       licenseDbVersion,
-      spdxListVersion
+      spdxListVersion,
+      rulesVersion
     };
   } catch (error) {
     console.error('Error getting database info:', error);
@@ -1979,8 +2161,12 @@ async function forceUpdateDatabase() {
     }
 
     // Update SPDX data as part of refresh
-    sendProgressUpdate(92, 'Updating SPDX lists...');
-    await syncSpdxDatabase({ noCache: true, progressStart: 92, progressSpan: 6 });
+    sendProgressUpdate(88, 'Updating SPDX lists...');
+    await syncSpdxDatabase({ noCache: true, progressStart: 88, progressSpan: 5 });
+
+    // Update ScanCode Toolkit rules
+    sendProgressUpdate(93, 'Updating ScanCode rules...');
+    await syncRulesDatabase({ noCache: true }).catch(err => console.warn('Rules sync skipped during update:', err));
 
     // Record the update timestamp
     sendProgressUpdate(98, 'Finalizing update...');

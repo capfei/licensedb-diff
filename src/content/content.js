@@ -202,7 +202,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       };
 
       if (resultGroupingMode === 'bySource') {
-        ['licensedb', 'spdx'].forEach((sourceKey) => {
+        ['licensedb', 'scancode-rule', 'spdx'].forEach((sourceKey) => {
           const sourceItems = matches.filter(m => (m.source || 'licensedb') === sourceKey);
           if (!sourceItems.length) return;
           const group = createEl('optgroup');
@@ -233,8 +233,16 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       return `${num.toFixed(2)}%`;
     }
 
-    const getSourceClass = (source) => (source === 'spdx' ? 'source-spdx' : 'source-licensedb');
-    const getSourceLabel = (source) => (source === 'spdx' ? 'SPDX' : 'ScanCode');
+    const getSourceClass = (source) => {
+      if (source === 'spdx') return 'source-spdx';
+      if (source === 'scancode-rule') return 'source-rule';
+      return 'source-licensedb';
+    };
+    const getSourceLabel = (source) => {
+      if (source === 'spdx') return 'SPDX';
+      if (source === 'scancode-rule') return 'ScanCode Rule';
+      return 'ScanCode';
+    };
 
 
     function showNotification(message, type = 'info', duration = 5000) {

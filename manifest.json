@@ -12,7 +12,8 @@
   ],
   "host_permissions": [
     "https://scancode-licensedb.aboutcode.org/*",
-    "https://spdx.org/*"
+    "https://spdx.org/*",
+    "https://capfei.github.io/*"
   ],
   "background": {
     "service_worker": "src/background/background.js",

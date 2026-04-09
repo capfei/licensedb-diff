@@ -409,6 +409,12 @@
   border: 1px solid rgba(33, 150, 243, 0.35);
 }
 
+.source-badge.source-rule {
+  background-color: rgba(156, 39, 176, 0.15);
+  color: #6a1b9a;
+  border: 1px solid rgba(156, 39, 176, 0.35);
+}
+
 .deprecated-badge {
   display: inline-flex;
   align-items: center;
@@ -498,6 +504,12 @@
   background-color: rgba(33, 150, 243, 0.15) !important;
   color: #1565c0 !important;
   border-color: rgba(33, 150, 243, 0.35) !important;
+}
+
+#license-diff-ui.ld-theme-light .source-badge.source-rule {
+  background-color: rgba(156, 39, 176, 0.15) !important;
+  color: #6a1b9a !important;
+  border-color: rgba(156, 39, 176, 0.35) !important;
 }
 
 #license-diff-ui.ld-theme-light .deprecated-badge {
@@ -606,6 +618,12 @@
   background-color: rgba(68, 147, 248, 0.22) !important;
   color: #cfe8ff !important;
   border-color: rgba(68, 147, 248, 0.45) !important;
+}
+
+#license-diff-ui.ld-theme-dark .source-badge.source-rule {
+  background-color: rgba(186, 104, 200, 0.22) !important;
+  color: #e1bee7 !important;
+  border-color: rgba(186, 104, 200, 0.45) !important;
 }
 
 #license-diff-ui.ld-theme-dark .deprecated-badge {
