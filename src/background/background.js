@@ -2435,6 +2435,7 @@ async function ensureDatabaseReady(context = 'startup') {
       console.log(`[LicenseMatch] Database missing (${context}); initializing.`);
       await preloadLicenseDatabase();
     } else {
+      updateBadge('green');
       await ensureSpdxDataInitialized();
     }
   } catch (err) {
