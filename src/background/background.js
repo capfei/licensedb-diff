@@ -242,6 +242,199 @@ function extractSpdxText(kind, detail) {
   return normalizeLicenseText(text || '');
 }
 
+function extractSpdxTemplate(kind, detail) {
+  if (!detail) return '';
+  if (kind === 'exception') {
+    return detail.licenseExceptionTemplate || detail.standardLicenseTemplate || '';
+  }
+  return detail.standardLicenseTemplate || '';
+}
+
+// Parse a standardLicenseTemplate into structured segments
+function parseSpdxTemplate(templateStr) {
+  if (!templateStr || typeof templateStr !== 'string') return null;
+
+  const segments = [];
+  const tagRegex = /<<(.*?)>>/gs;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = tagRegex.exec(templateStr)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ type: 'text', value: templateStr.slice(lastIndex, match.index) });
+    }
+
+    const tagContent = match[1];
+
+    if (tagContent === 'beginOptional') {
+      segments.push({ type: 'beginOptional' });
+    } else if (tagContent === 'endOptional') {
+      segments.push({ type: 'endOptional' });
+    } else if (tagContent.startsWith('var;')) {
+      const varContent = tagContent.slice(4);
+      segments.push({ type: 'var', ...parseTemplateVarFields(varContent) });
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < templateStr.length) {
+    segments.push({ type: 'text', value: templateStr.slice(lastIndex) });
+  }
+
+  return segments;
+}
+
+function parseTemplateVarFields(content) {
+  const result = { name: '', original: '', match: '.+' };
+
+  const nameMatch = content.match(/name="([^"]*)"/);  
+  if (nameMatch) result.name = nameMatch[1];
+
+  // match is always the last field: match="..."
+  const matchIdx = content.lastIndexOf('match="');
+  if (matchIdx !== -1) {
+    const matchStart = matchIdx + 7;
+    const matchEnd = content.lastIndexOf('"');
+    if (matchEnd > matchStart) {
+      result.match = content.slice(matchStart, matchEnd).replace(/\\;/g, ';');
+    }
+  }
+
+  // original is between original="..." and ";match="
+  const origIdx = content.indexOf('original="');
+  if (origIdx !== -1) {
+    const origStart = origIdx + 10;
+    const beforeMatch = content.indexOf('";match="');
+    if (beforeMatch > origStart) {
+      result.original = content.slice(origStart, beforeMatch);
+    }
+  }
+
+  return result;
+}
+
+function escapeRegExpText(text) {
+  let escaped = text
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // B.4: normalize whitespace to \s+
+  escaped = escaped.replace(/\\\s\+|\s+/g, '\\s+');
+  // B.6.3: hyphens/dashes equivalent
+  escaped = escaped.replace(/[-\u2013\u2014]/g, '[-\\u2013\\u2014]');
+  // B.6.4: quote variants equivalent
+  escaped = escaped.replace(/["\u201C\u201D\u00AB\u00BB\u201E]/g, '["\\u201C\\u201D\\u00AB\\u00BB\\u201E]');
+  escaped = escaped.replace(/['\u2018\u2019\u201A\u201B]/g, "['\\u2018\\u2019\\u201A\\u201B]");
+  return escaped;
+}
+
+// Compile an SPDX template string into a JavaScript RegExp
+function compileSpdxTemplateRegex(templateStr) {
+  const segments = parseSpdxTemplate(templateStr);
+  if (!segments || !segments.length) return null;
+
+  // Build regex parts from segments, handling whitespace at boundaries between
+  // text and non-text segments (var, beginOptional, endOptional).  The SPDX
+  // templates embed formatting spaces around <<var>> tags that are not present
+  // in actual license text, so boundary whitespace must be made flexible.
+  const parts = [];
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    switch (seg.type) {
+      case 'text': {
+        // Trim whitespace from edges adjacent to non-text segments
+        // (including the very first/last segments where prev/next is undefined)
+        let text = seg.value;
+        const prev = segments[i - 1];
+        const next = segments[i + 1];
+        if (!prev || prev.type !== 'text') text = text.replace(/^\s+/, '');
+        if (!next || next.type !== 'text') text = text.replace(/\s+$/, '');
+
+        if (!text.length) {
+          // Segment was purely whitespace between two non-text segments
+          parts.push('\\s*');
+        } else {
+          parts.push(escapeRegExpText(text));
+        }
+        break;
+      }
+      case 'var':
+        // Insert flexible whitespace before var if previous part doesn't end
+        // with a whitespace pattern already
+        if (parts.length && !/\\s[*+]$/.test(parts[parts.length - 1])) {
+          parts.push('\\s*');
+        }
+        parts.push('(?:' + seg.match + ')');
+        // Flexible whitespace after var
+        parts.push('\\s*');
+        break;
+      case 'beginOptional':
+        if (parts.length && !/\\s[*+]$/.test(parts[parts.length - 1])) {
+          parts.push('\\s*');
+        }
+        parts.push('(?:');
+        break;
+      case 'endOptional':
+        parts.push(')?');
+        parts.push('\\s*');
+        break;
+    }
+  }
+
+  // Collapse consecutive \s* into a single \s*
+  const regexStr = parts.join('')
+    .replace(/(\\s[*+]){2,}/g, '\\s*');
+
+  try {
+    return new RegExp('^\\s*' + regexStr + '\\s*$', 'is');
+  } catch (e) {
+    console.warn('[SPDX Template] Failed to compile regex:', e.message);
+    return null;
+  }
+}
+
+// Test if input text matches an SPDX license template
+function testSpdxTemplateMatch(templateStr, inputText) {
+  if (!templateStr || !inputText) return false;
+  const regex = compileSpdxTemplateRegex(templateStr);
+  if (!regex) return false;
+  try {
+    return regex.test(inputText);
+  } catch (e) {
+    console.warn('[SPDX Template] Regex test error:', e.message);
+    return false;
+  }
+}
+
+// Extract only the fixed (non-variable, non-optional) text from a template
+function extractTemplateFixedText(templateStr) {
+  const segments = parseSpdxTemplate(templateStr);
+  if (!segments) return '';
+  let optionalDepth = 0;
+  const fixedParts = [];
+  for (const seg of segments) {
+    if (seg.type === 'beginOptional') { optionalDepth++; continue; }
+    if (seg.type === 'endOptional') { optionalDepth = Math.max(0, optionalDepth - 1); continue; }
+    if (optionalDepth > 0) continue;
+    if (seg.type === 'text') fixedParts.push(seg.value);
+    // skip 'var' segments — they are replaceable
+  }
+  return fixedParts.join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+// Compute how well the fixed text portions of a template appear in the input
+function computeTemplateFixedScore(fixedText, inputText) {
+  if (!fixedText) return 1;
+  const inputLower = inputText.toLowerCase().replace(/\s+/g, ' ');
+  const fixedWords = fixedText.split(/\s+/).filter(Boolean);
+  if (!fixedWords.length) return 1;
+  let matched = 0;
+  for (const word of fixedWords) {
+    if (inputLower.includes(word)) matched++;
+  }
+  return matched / fixedWords.length;
+}
+
 async function fetchSpdxIndexes(noCache = false) {
   const fetchOptions = noCache ? { cache: 'no-cache' } : undefined;
   const [licensesResp, exceptionsResp] = await Promise.all([
@@ -302,6 +495,7 @@ async function syncSpdxDatabase({ noCache = false, progressStart = null, progres
         const detailJson = await detailResp.json();
 
         const text = extractSpdxText(kind, detailJson);
+        const template = extractSpdxTemplate(kind, detailJson);
         const entryKey = makeSpdxEntryKey(kind, id);
         const data = {
           source: SOURCES.SPDX,
@@ -310,6 +504,7 @@ async function syncSpdxDatabase({ noCache = false, progressStart = null, progres
           spdx: id,
           name: item.name || detailJson?.name || id,
           text,
+          template,
           detailsUrl,
           reference: item.reference || detailJson?.reference || null,
           seeAlso: item.seeAlso || detailJson?.seeAlso || []
@@ -1088,7 +1283,8 @@ async function loadScanEntryData(entry) {
       license: entry.key,
       name: existing.data.name || entry.key,
       spdx: existing.data.spdx || entry.key,
-      text: normalizeLicenseText(existing.data.text)
+      text: normalizeLicenseText(existing.data.text),
+      template: existing.data.template || ''
     };
   }
 
@@ -1098,6 +1294,7 @@ async function loadScanEntryData(entry) {
   if (!response.ok) return null;
   const detailJson = await response.json();
   const text = extractSpdxText(entry.isException ? 'exception' : 'license', detailJson);
+  const template = extractSpdxTemplate(entry.isException ? 'exception' : 'license', detailJson);
   const data = {
     source: SOURCES.SPDX,
     kind: entry.isException ? 'exception' : 'license',
@@ -1105,6 +1302,7 @@ async function loadScanEntryData(entry) {
     spdx: entry.spdx || entry.key,
     name: entry.raw?.name || detailJson?.name || entry.key,
     text,
+    template,
     detailsUrl
   };
   await putStoreRecord('spdx_entries', { entry_key: entry.storeKey, data });
@@ -1120,7 +1318,8 @@ async function loadScanEntryData(entry) {
     license: entry.key,
     name: data.name,
     spdx: data.spdx,
-    text
+    text,
+    template: template || ''
   };
 }
 
@@ -1436,6 +1635,7 @@ async function fetchLicenses(text, sendProgress, options = {}) {
             cand.name = hydrated.name;
             cand.spdx = hydrated.spdx;
             cand.cacheKey = hydrated.key;
+            cand.template = hydrated.template || '';
           }
 
           const canonLic = cand.canonLicense || canonicalizeForDiff(cand.licenseText);
@@ -1474,12 +1674,40 @@ async function fetchLicenses(text, sendProgress, options = {}) {
             )
           );
 
-          const finalScore =
+          let finalScore =
             0.40 * containmentTokenPct +
             0.35 * cosineTokenPct +
             0.25 * tokenLevPct;
 
+          // SPDX template matching: if this is an SPDX entry with a template,
+          // test whether the selected text conforms to the template.
+          // Per SPDX matching guidelines (B.3.4, B.3.5), replaceable and
+          // omittable sections should not lower the match score.
+          let templateMatch = false;
+          if (cand.source === SOURCES.SPDX && cand.template) {
+            try {
+              templateMatch = testSpdxTemplateMatch(cand.template, selectedNormalized);
+              if (templateMatch) {
+                // The text structurally conforms to the license template.
+                // Compute a template-aware score that measures how much of
+                // the fixed (non-variable) text actually matches, rather than
+                // using a flat floor.  This way two different BSD-3-Clause
+                // files with different copyright holders don't both land at
+                // the same flat score.
+                const fixedText = extractTemplateFixedText(cand.template);
+                const templateFixedScore = computeTemplateFixedScore(fixedText, selectedNormalized);
+                // Minimum 90 for any template match; scale remaining 10 pts
+                // by how well the fixed portions match
+                const templateScore = 90 + (templateFixedScore * 10);
+                finalScore = Math.max(finalScore, templateScore);
+              }
+            } catch (tmplErr) {
+              console.warn('[SPDX Template] match test failed for', cand.license, tmplErr.message);
+            }
+          }
+
           const passes =
+            templateMatch ||
             containmentTokenPct >= FINAL_THRESHOLD ||
             finalScore >= FINAL_THRESHOLD;
 
@@ -1493,6 +1721,7 @@ async function fetchLicenses(text, sendProgress, options = {}) {
               charSimilarity: finalScore.toFixed(2),
               diff: null,
               _licenseText: cand.licenseText,
+              templateMatch,
               diffMetrics: {
                 containment: containmentTokenPct.toFixed(2),
                 cosine: cosineTokenPct.toFixed(2),
@@ -2392,6 +2621,7 @@ async function ensureDatabaseReady(context = 'startup') {
       console.log(`[LicenseMatch] Database missing (${context}); initializing.`);
       await preloadLicenseDatabase();
     } else {
+      updateBadge('green');
       await ensureSpdxDataInitialized();
     }
   } catch (err) {
