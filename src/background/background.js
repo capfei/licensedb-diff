@@ -2376,7 +2376,7 @@ async function handleActionClick(tab, filterChoice, traceId = nextScanTrace('han
   try {
     console.info(`[LicenseMatch][${traceId}] handleActionClick begin`, { tabId: tab?.id, filter: filterChoice });
     const url = tab.url || '';
-    if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') || url.startsWith('about:') || url.startsWith('edge://')) {
+    if (url.startsWith('chrome://') || url.startsWith('chrome-extension://') || url.startsWith('about:') || url.startsWith('edge://') || url.startsWith('moz-extension://')) {
       console.warn(`[LicenseMatch][${traceId}] Cannot run on this page type:`, url);
       return;
     }

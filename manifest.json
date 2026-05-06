@@ -3,6 +3,12 @@
   "name": "LicenseDB License Diff",
   "version": "0.0.8",
   "description": "Compares and diffs selected text using AboutCode's ScanCode LicenseDB license list and SPDX License List.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "licensedb-diff@capfei",
+      "strict_min_version": "128.0"
+    }
+  },
   "permissions": [
     "activeTab",
     "scripting",
@@ -16,6 +22,7 @@
   ],
   "background": {
     "service_worker": "src/background/background.js",
+    "scripts": ["src/background/background.js"],
     "type": "module"
   },
   "action": {
