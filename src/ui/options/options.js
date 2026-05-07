@@ -1,5 +1,6 @@
 import { SCAN_DEFAULTS } from "../../shared/scan-defaults.js";
 import { UI_DEFAULTS } from "../../shared/ui-defaults.js";
+import ext from "../../shared/ext-api.js";
 
 document.addEventListener('DOMContentLoaded', async function() {
   // Initialize UI
@@ -30,7 +31,7 @@ const DEFAULT_APPEARANCE = { theme: UI_DEFAULTS.theme };
 function storageGet(keysWithDefaults) {
   return new Promise((resolve) => {
     try {
-      chrome.storage.sync.get(keysWithDefaults, (items) => resolve(items || keysWithDefaults));
+      ext.storage.sync.get(keysWithDefaults, (items) => resolve(items || keysWithDefaults));
     } catch {
       resolve(keysWithDefaults);
     }
@@ -40,9 +41,9 @@ function storageGet(keysWithDefaults) {
 function storageSet(obj) {
   return new Promise((resolve, reject) => {
     try {
-      chrome.storage.sync.set(obj, () => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
+      ext.storage.sync.set(obj, () => {
+        if (ext.runtime.lastError) {
+          reject(new Error(ext.runtime.lastError.message));
         } else {
           resolve(true);
         }
@@ -168,14 +169,14 @@ async function refreshDatabase() {
     updateStatus.textContent = 'Starting database update...';
     
     // Listen for progress updates
-    chrome.runtime.onMessage.addListener(function progressListener(message) {
+    ext.runtime.onMessage.addListener(function progressListener(message) {
       if (message.action === 'updateProgress') {
         progressBar.style.width = `${message.progress}%`;
         updateStatus.textContent = message.message;
         
         // If complete, remove listener
         if (message.progress >= 100 || message.complete) {
-          chrome.runtime.onMessage.removeListener(progressListener);
+          ext.runtime.onMessage.removeListener(progressListener);
         }
       }
     });
@@ -217,14 +218,14 @@ async function resetDatabase() {
       updateStatus.textContent = 'Resetting database...';
       
       // Listen for progress updates
-      chrome.runtime.onMessage.addListener(function progressListener(message) {
+      ext.runtime.onMessage.addListener(function progressListener(message) {
         if (message.action === 'updateProgress') {
           progressBar.style.width = `${message.progress}%`;
           updateStatus.textContent = message.message;
           
           // If complete, remove listener
           if (message.progress >= 100 || message.complete) {
-            chrome.runtime.onMessage.removeListener(progressListener);
+            ext.runtime.onMessage.removeListener(progressListener);
           }
         }
       });
@@ -251,9 +252,9 @@ async function resetDatabase() {
 // Helper function to send messages to the background script
 function sendMessageToBackground(message) {
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, response => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
+    ext.runtime.sendMessage(message, response => {
+      if (ext.runtime.lastError) {
+        reject(new Error(ext.runtime.lastError.message));
         return;
       }
       if (response && response.error) {

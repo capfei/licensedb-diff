@@ -1,3 +1,6 @@
+// Resolve the correct WebExtension API namespace
+const ext = globalThis.browser ?? globalThis.chrome;
+
 // Avoid duplicate UI when dynamically injected multiple times
 var __LD_STATE__ = (window.__LICENSE_DIFF_STATE__ ||= { initialized: false, initializing: false });
 
@@ -96,7 +99,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     async function getUserTheme() {
       return new Promise((resolve) => {
         try {
-          chrome.storage?.sync?.get({ theme: 'light' }, (items) => {
+          ext.storage?.sync?.get({ theme: 'light' }, (items) => {
             resolve(items?.theme === 'dark' ? 'dark' : 'light');
           });
         } catch {
@@ -108,7 +111,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     async function getResultGroupingMode() {
       return new Promise((resolve) => {
         try {
-          chrome.storage?.sync?.get({ resultGrouping: 'overall' }, (items) => {
+          ext.storage?.sync?.get({ resultGrouping: 'overall' }, (items) => {
             resolve(items?.resultGrouping === 'bySource' ? 'bySource' : 'overall');
           });
         } catch {
@@ -124,7 +127,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     }
 
     function saveTheme(theme) {
-      try { chrome.storage?.sync?.set({ theme }); } catch { /* ignore */ }
+      try { ext.storage?.sync?.set({ theme }); } catch { /* ignore */ }
     }
 
     const closeButton = createEl('button');
@@ -292,7 +295,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
 
     groupingSelect.addEventListener('change', () => {
       resultGroupingMode = groupingSelect.value === 'bySource' ? 'bySource' : 'overall';
-      try { chrome.storage?.sync?.set({ resultGrouping: resultGroupingMode }); } catch { /* ignore */ }
+      try { ext.storage?.sync?.set({ resultGrouping: resultGroupingMode }); } catch { /* ignore */ }
 
       if (!matches.length) return;
       const selectedMatchKey = dropdown.value;
@@ -301,7 +304,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     });
 
     try {
-      chrome.storage?.onChanged?.addListener((changes, area) => {
+      ext.storage?.onChanged?.addListener((changes, area) => {
         if (area === 'sync') {
           if (changes.theme) {
             const theme = changes.theme.newValue === 'dark' ? 'dark' : 'light';
@@ -321,7 +324,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       });
     } catch { /* ignore */ }
 
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         ensureMounted();
 
@@ -344,6 +347,8 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
 
           setDisplay(diffContainer, 'none');
           safeClearHTML(diffContainer);
+
+          setDisplay(groupingRow, 'none');
 
           if (progressEl) {
             removeClass(progressEl, 'animating');
@@ -372,7 +377,14 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
             }
           }
 
-          status.textContent = `Checked ${checked} of ${total} licenses...`;
+          const progressMsg = (message.progress && typeof message.progress.message === 'string') ? message.progress.message : '';
+          if (progressMsg && checked >= total) {
+            // After the approx phase completes, surface the refinement / completion message
+            // so the UI doesn't appear stuck on "Checked X of X licenses...".
+            status.textContent = progressMsg;
+          } else {
+            status.textContent = `Checked ${checked} of ${total} licenses...`;
+          }
           sendResponse({ success: true });
         } else if (message.action === 'showResults') {
           removeClass(progressEl, 'animating');
@@ -412,7 +424,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
               a.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                chrome.runtime.sendMessage({ action: 'openExternal', url: a.href });
+                ext.runtime.sendMessage({ action: 'openExternal', url: a.href });
               }, { passive: false });
             }
 
@@ -538,7 +550,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     if (!existingStyle) (document.head || document.documentElement).appendChild(style);
 
     try {
-      chrome.runtime.sendMessage({ action: 'contentScriptReady' });
+      ext.runtime.sendMessage({ action: 'contentScriptReady' });
     } catch (err) {
       console.warn('Error notifying background script:', err);
     }
@@ -551,3 +563,4 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     __LD_STATE__.initializing = false;
   }
 }
+

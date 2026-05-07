@@ -15,6 +15,7 @@
     "https://spdx.org/*"
   ],
   "background": {
+    "scripts": ["src/background/background.js"],
     "service_worker": "src/background/background.js",
     "type": "module"
   },
@@ -39,6 +40,12 @@
     "16": "src/assets/images/icon-16.png",
     "48": "src/assets/images/icon-48.png",
     "128": "src/assets/images/icon-128.png"
+  },
+   "browser_specific_settings": {
+    "gecko": {
+      "id": "licensedb-diff@capfei",
+      "strict_min_version": "128.0"
+    }
   }
 }
 
