@@ -5,6 +5,7 @@ console.log('Background script loaded.');
 import DiffMatchPatch from "../lib/diff_match_patch.js";
 import { SCAN_DEFAULTS, SCAN_ENDPOINTS } from "../shared/scan-defaults.js";
 import { UI_DEFAULTS, BADGE_STYLES, BADGE_DEFAULT } from "../shared/ui-defaults.js";
+import ext from "../shared/ext-api.js";
 
 const AUTO_REFRESH_ALARM = 'licensedb-auto-refresh';
 const AUTO_REFRESH_DAYS = 14;
@@ -30,8 +31,8 @@ const CONFIG = {
 
 function updateBadge(color) {
   const style = BADGE_STYLES[color] || BADGE_STYLES[BADGE_DEFAULT];
-  chrome.action.setBadgeText({ text: style.text });
-  chrome.action.setBadgeBackgroundColor({ color: style.color });
+  ext.action.setBadgeText({ text: style.text });
+  ext.action.setBadgeBackgroundColor({ color: style.color });
 }
 
 const FILTER_OPTIONS = Object.freeze({ LICENSES: 'licenses', EXCEPTIONS: 'exceptions', BOTH: 'both' });
@@ -280,7 +281,7 @@ function parseSpdxTemplate(templateStr) {
 }
 
 function parseTemplateVarFields(content) {
-  const result = { name: '', original: '', match: '.+' };
+  const result = { name: '', original: '', match: '.+?' };
 
   const nameMatch = content.match(/name="([^"]*)"/);  
   if (nameMatch) result.name = nameMatch[1];
@@ -346,7 +347,7 @@ function compileSpdxTemplateRegex(templateStr) {
 
         if (!text.length) {
           // Segment was purely whitespace between two non-text segments
-          parts.push('\\s*');
+          parts.push('\\s*?');
         } else {
           parts.push(escapeRegExpText(text));
         }
@@ -355,29 +356,29 @@ function compileSpdxTemplateRegex(templateStr) {
       case 'var':
         // Insert flexible whitespace before var if previous part doesn't end
         // with a whitespace pattern already
-        if (parts.length && !/\\s[*+]$/.test(parts[parts.length - 1])) {
-          parts.push('\\s*');
+        if (parts.length && !/\\s[*+]\??$/.test(parts[parts.length - 1])) {
+          parts.push('\\s*?');
         }
         parts.push('(?:' + seg.match + ')');
         // Flexible whitespace after var
-        parts.push('\\s*');
+        parts.push('\\s*?');
         break;
       case 'beginOptional':
-        if (parts.length && !/\\s[*+]$/.test(parts[parts.length - 1])) {
-          parts.push('\\s*');
+        if (parts.length && !/\\s[*+]\??$/.test(parts[parts.length - 1])) {
+          parts.push('\\s*?');
         }
         parts.push('(?:');
         break;
       case 'endOptional':
         parts.push(')?');
-        parts.push('\\s*');
+        parts.push('\\s*?');
         break;
     }
   }
 
-  // Collapse consecutive \s* into a single \s*
+  // Collapse consecutive \s* / \s*? into a single lazy \s*?
   const regexStr = parts.join('')
-    .replace(/(\\s[*+]){2,}/g, '\\s*');
+    .replace(/(\\s[*+]\??){2,}/g, '\\s*?');
 
   try {
     return new RegExp('^\\s*' + regexStr + '\\s*$', 'is');
@@ -388,8 +389,15 @@ function compileSpdxTemplateRegex(templateStr) {
 }
 
 // Test if input text matches an SPDX license template
+// SAFETY: JavaScript's RegExp has no timeout, and SPDX templates with many
+// <<var>> tags can produce regexes that catastrophically backtrack on long
+// inputs (e.g., Artistic-2.0 against an 8KB+ selection). When the input is
+// large, skip the template match and rely on the diff / token-Levenshtein
+// scoring instead, which is already strong for long selections.
+const SPDX_TEMPLATE_MAX_INPUT = 4000;
 function testSpdxTemplateMatch(templateStr, inputText) {
   if (!templateStr || !inputText) return false;
+  if (inputText.length > SPDX_TEMPLATE_MAX_INPUT) return false;
   const regex = compileSpdxTemplateRegex(templateStr);
   if (!regex) return false;
   try {
@@ -522,7 +530,7 @@ async function syncSpdxDatabase({ noCache = false, progressStart = null, progres
     if (progressStart !== null && progressSpan !== null) {
       const pct = Math.round(progressStart + (processed / entries.length) * progressSpan);
       sendProgressUpdate(pct, `Processing SPDX entries: ${processed}/${entries.length} (${failures} failures)`);
-      chrome.action.setBadgeText({ text: `${Math.min(99, pct)}%` });
+      ext.action.setBadgeText({ text: `${Math.min(99, pct)}%` });
     }
   }
 
@@ -615,7 +623,7 @@ async function preloadLicenseDatabase() {
       const percentComplete = Math.round((processed / totalLicenses) * 100);
 
       // Update badge to show progress
-      chrome.action.setBadgeText({ text: `${percentComplete}%` });
+      ext.action.setBadgeText({ text: `${percentComplete}%` });
 
       console.log(`License initialization progress: ${processed}/${totalLicenses} (${percentComplete}%)`);
     }
@@ -707,20 +715,20 @@ function showNotification(tabId, message, type = 'info') {
 function sendMessageToTab(tabId, message) {
   return new Promise((resolve, reject) => {
     try {
-      chrome.tabs.sendMessage(tabId, message, (response) => {
-        if (chrome.runtime.lastError) {
-          const msg = chrome.runtime.lastError.message || 'Unknown error';
+      ext.tabs.sendMessage(tabId, message, (response) => {
+        if (ext.runtime.lastError) {
+          const msg = ext.runtime.lastError.message || 'Unknown error';
           // Attempt one-time dynamic injection if content script missing
           if (msg.includes('Could not establish connection. Receiving end does not exist')) {
             console.warn('Content script not found in tab ' + tabId + ', attempting dynamic injection...');
             Promise.all([
-              chrome.scripting.insertCSS({ target: { tabId }, files: ['src/content/content.css'] }).catch(() => { }),
-              chrome.scripting.executeScript({ target: { tabId }, files: ['src/content/content.js'] })
+              ext.scripting.insertCSS({ target: { tabId }, files: ['src/content/content.css'] }).catch(() => { }),
+              ext.scripting.executeScript({ target: { tabId }, files: ['src/content/content.js'] })
             ]).then(() => {
-              chrome.tabs.sendMessage(tabId, message, (secondResp) => {
-                if (chrome.runtime.lastError) {
-                  console.error('Retry after injection failed:', chrome.runtime.lastError.message);
-                  reject(new Error(chrome.runtime.lastError.message));
+              ext.tabs.sendMessage(tabId, message, (secondResp) => {
+                if (ext.runtime.lastError) {
+                  console.error('Retry after injection failed:', ext.runtime.lastError.message);
+                  reject(new Error(ext.runtime.lastError.message));
                 } else {
                   resolve(secondResp);
                 }
@@ -752,8 +760,8 @@ async function ensureContentScript(tabId) {
   } catch (e) {
     // Attempt injection
     try {
-      await chrome.scripting.insertCSS({ target: { tabId }, files: ['src/content/content.css'] }).catch(() => { });
-      await chrome.scripting.executeScript({ target: { tabId }, files: ['src/content/content.js'] });
+      await ext.scripting.insertCSS({ target: { tabId }, files: ['src/content/content.css'] }).catch(() => { });
+      await ext.scripting.executeScript({ target: { tabId }, files: ['src/content/content.js'] });
       // Small delay to allow script init
       await new Promise(r => setTimeout(r, 50));
       return true;
@@ -1034,7 +1042,7 @@ async function loadUserSettings() {
   };
   return new Promise((resolve) => {
     try {
-      chrome.storage?.sync?.get(defaults, (items) => {
+      ext.storage?.sync?.get(defaults, (items) => {
         currentScanFilter = normalizeFilter(items?.scanFilter);
         resolve(items || defaults);
       });
@@ -1465,6 +1473,12 @@ async function fetchLicenses(text, sendProgress, options = {}) {
     }
 
     async function runDiffs(cands) {
+      await sendProgress({
+        checked: checkedLicenses,
+        total: totalLicenses,
+        promising: cands.length,
+        message: `Refining 0/${cands.length}...`
+      });
       for (let idx = 0; idx < cands.length; idx++) {
         if ((performance.now() - startDiffPhase) > DIFF_BUDGET_MS) {
           console.info('[LicenseMatch][Diff] Budget exceeded; stopping.');
@@ -1786,9 +1800,9 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
 }
 
 // Message listener
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.action === 'openExternal' && typeof message.url === 'string') {
-    chrome.tabs.create({ url: message.url }).then(() => {
+    ext.tabs.create({ url: message.url }).then(() => {
       sendResponse({ ok: true });
     }).catch(err => {
       console.error('openExternal failed:', err);
@@ -1823,9 +1837,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (!senderTabId) {
       // If no tab ID is available (e.g., sent from popup), get the current active tab
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (chrome.runtime.lastError || !tabs || tabs.length === 0) {
-          const errMsg = chrome.runtime.lastError ? chrome.runtime.lastError.message : 'No active tabs found';
+      ext.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (ext.runtime.lastError || !tabs || tabs.length === 0) {
+          const errMsg = ext.runtime.lastError ? ext.runtime.lastError.message : 'No active tabs found';
           console.error('Error getting active tab:', errMsg);
           return;
         }
@@ -1839,7 +1853,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   } else if (message.action === 'noTextSelected') {
     // Handle no text selected
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    ext.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs && tabs.length > 0) {
         showNotification(tabs[0].id, "Please select text before running license check.", "warning");
       }
@@ -1882,7 +1896,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         await new Promise((resolve) => {
           try {
-            chrome.storage?.sync?.set(storageUpdate, () => resolve(true));
+            ext.storage?.sync?.set(storageUpdate, () => resolve(true));
           } catch {
             resolve(true);
           }
@@ -2204,7 +2218,7 @@ async function forceUpdateDatabase() {
       );
 
       // Update badge to show progress
-      chrome.action.setBadgeText({ text: `${Math.round(percentComplete)}%` });
+      ext.action.setBadgeText({ text: `${Math.round(percentComplete)}%` });
     }
 
     // Update SPDX data as part of refresh
@@ -2339,7 +2353,7 @@ async function recordUpdateTimestamp() {
 // Function to send progress updates to the options page
 function sendProgressUpdate(progress, message, complete = false) {
   try {
-    chrome.runtime.sendMessage({
+    ext.runtime.sendMessage({
       action: 'updateProgress',
       progress,
       message,
@@ -2351,7 +2365,7 @@ function sendProgressUpdate(progress, message, complete = false) {
 }
 
 // Update the action click handler to ensure connection before execution
-chrome.action.onClicked.addListener(async (tab) => {
+ext.action.onClicked.addListener(async (tab) => {
   const traceId = nextScanTrace('action');
   console.info(`[LicenseMatch][${traceId}] action icon clicked`, { tabId: tab?.id, filter: currentScanFilter });
   await handleActionClick(tab, currentScanFilter, traceId);
@@ -2360,7 +2374,7 @@ chrome.action.onClicked.addListener(async (tab) => {
 async function initiateScanForActiveTab(filterChoice, traceId = nextScanTrace('start')) {
   try {
     console.info(`[LicenseMatch][${traceId}] resolving active tab`, { filter: filterChoice });
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [tab] = await ext.tabs.query({ active: true, currentWindow: true });
     if (tab) {
       console.info(`[LicenseMatch][${traceId}] active tab resolved`, { tabId: tab.id, url: tab.url || '' });
       await handleActionClick(tab, filterChoice, traceId);
@@ -2380,7 +2394,7 @@ async function handleActionClick(tab, filterChoice, traceId = nextScanTrace('han
       console.warn(`[LicenseMatch][${traceId}] Cannot run on this page type:`, url);
       return;
     }
-    const results = await chrome.scripting.executeScript({
+    const results = await ext.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true },
       func: () => {
         try {
@@ -2445,7 +2459,7 @@ async function ensureDatabaseReady(context = 'startup') {
 
 ensureDatabaseReady('background-load');
 
-chrome.runtime.onInstalled.addListener(async (details) => {
+ext.runtime.onInstalled.addListener(async (details) => {
   console.log('[LicenseMatch] onInstalled:', details.reason);
   if (details.reason === 'update') {
     // Reset badge
@@ -2453,24 +2467,24 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   }
   await ensureDatabaseReady('onInstalled');
   // Register periodic auto-refresh alarm (only if not already set)
-  const existing = await chrome.alarms.get(AUTO_REFRESH_ALARM);
+  const existing = await ext.alarms.get(AUTO_REFRESH_ALARM);
   if (!existing) {
-    chrome.alarms.create(AUTO_REFRESH_ALARM, { periodInMinutes: AUTO_REFRESH_DAYS * 24 * 60 });
+    ext.alarms.create(AUTO_REFRESH_ALARM, { periodInMinutes: AUTO_REFRESH_DAYS * 24 * 60 });
     console.log(`[LicenseMatch] Auto-refresh alarm registered (every ${AUTO_REFRESH_DAYS} days)`);
   }
 });
 
-chrome.runtime.onStartup.addListener(async () => {
+ext.runtime.onStartup.addListener(async () => {
   await ensureDatabaseReady('onStartup');
   // Re-register alarm in case it was cleared (e.g. browser profile reset)
-  const existing = await chrome.alarms.get(AUTO_REFRESH_ALARM);
+  const existing = await ext.alarms.get(AUTO_REFRESH_ALARM);
   if (!existing) {
-    chrome.alarms.create(AUTO_REFRESH_ALARM, { periodInMinutes: AUTO_REFRESH_DAYS * 24 * 60 });
+    ext.alarms.create(AUTO_REFRESH_ALARM, { periodInMinutes: AUTO_REFRESH_DAYS * 24 * 60 });
     console.log(`[LicenseMatch] Auto-refresh alarm re-registered (every ${AUTO_REFRESH_DAYS} days)`);
   }
 });
 
-chrome.alarms.onAlarm.addListener(async (alarm) => {
+ext.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== AUTO_REFRESH_ALARM) return;
   console.log('[LicenseMatch] Auto-refresh alarm fired — updating database');
   try {
