@@ -9,9 +9,10 @@ official extension.
 
 ## Installation
 
-The extension is available for
-[Chrome](https://chromewebstore.google.com/detail/licensedb-diff/nlbgoabjahcideocgmnipmeabicnpejf)
-and [Microsoft Edge](https://microsoftedge.microsoft.com/addons/detail/licensedb-diff/phmkmmgkfediamaidpmmdgnbbglchadl).
+The extension is available at:
+- [Chrome Web Store](https://chromewebstore.google.com/detail/licensedb-diff/nlbgoabjahcideocgmnipmeabicnpejf)
+- [Firefox Browser Add-ons](https://addons.mozilla.org/en-US/firefox/addon/licensedb-license-diff/)
+- [Microsoft Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/licensedb-diff/phmkmmgkfediamaidpmmdgnbbglchadl)
 
 ## Using the extension
 
