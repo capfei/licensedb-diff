@@ -2534,10 +2534,15 @@ function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
     return sims.containmentPct >= 3 || sims.avgPct >= 3;
   };
 
+  // Rewards matched text while penalising fragmentation: char-level diffs can
+  // match more raw characters than word-level ones yet read as unusable noise.
   const evaluateDiffQuality = (diff) => {
     if (!Array.isArray(diff) || !diff.length) return -Infinity;
     let equalChars = 0;
-    let replacementPairs = 0;
+    let editChars = 0;
+    let editChunks = 0;
+    let noiseEqualities = 0;
+    let brokenWordEdits = 0;
     let largeReplacementPairs = 0;
 
     const toTuple = (entry) => {
@@ -2552,11 +2557,28 @@ function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
       return null;
     };
 
+    const isWordChar = (ch) => !!ch && /[A-Za-z0-9]/.test(ch);
+
     for (let i = 0; i < diff.length; i++) {
       const current = toTuple(diff[i]);
       if (!current) continue;
       const [op, data] = current;
-      if (op === 0) equalChars += data.length;
+
+      if (op === 0) {
+        equalChars += data.length;
+        const trimmed = data.trim();
+        if (i > 0 && i < diff.length - 1 && trimmed.length > 0 && trimmed.length <= 3) noiseEqualities++;
+      } else {
+        editChars += data.length;
+        editChunks++;
+        const prev = toTuple(diff[i - 1]);
+        const next = toTuple(diff[i + 1]);
+        const prevChar = prev && prev[0] === 0 ? prev[1].slice(-1) : '';
+        const nextChar = next && next[0] === 0 ? next[1].charAt(0) : '';
+        // An edit that starts/ends mid-word is a sub-word split (e.g. "Lic|ence").
+        if (isWordChar(prevChar) && isWordChar(data.charAt(0))) brokenWordEdits++;
+        if (isWordChar(nextChar) && isWordChar(data.slice(-1))) brokenWordEdits++;
+      }
 
       const next = toTuple(diff[i + 1]);
       if (!next) continue;
@@ -2565,40 +2587,37 @@ function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
         (op === -1 && nextOp === 1) ||
         (op === 1 && nextOp === -1);
       if (!isReplacement) continue;
-      replacementPairs++;
-      if ((data.length + nextData.length) > 300) largeReplacementPairs++;
+      if ((data.length + nextData.length) > 800) largeReplacementPairs++;
     }
 
-    return equalChars - (replacementPairs * 120) - (largeReplacementPairs * 280);
+    return equalChars
+      - (editChars * 0.25)
+      - (editChunks * 20)
+      - (noiseEqualities * 60)
+      - (brokenWordEdits * 80)
+      - (largeReplacementPairs * 200);
   };
 
   const attemptDiff = () => {
-    // For long texts, line-level diffs via diff_linesToChars_ reduce text
-    // to ~500 chars, so timeout=0 is safe. If line-level produces degenerate
-    // results (mismatched line wrapping), fall back to char-level on
-    // paragraph-normalized text with bounded timeout.
+    // Word mode is tried first: it collapses each text to one code unit per
+    // token, so it is both fast and aligned to word boundaries the way online
+    // diff tools behave. Line/char modes remain as fallbacks.
     const isLongText = (paraA.length > 15000 || paraB.length > 15000);
     const timeouts = isLongText
       ? [1, 3, 0]
       : [Math.max(originalTimeout || 0, 1), 4, 0];
-    const attempts = isLongText
-      ? [
-          { a: paraA, b: paraB, mode: 'lines' },
-          { a: displayA, b: displayB, mode: 'lines' },
-          { a: canonA, b: canonB, mode: 'lines' },
-          { a: paraA, b: paraB, mode: 'chars' },
-        ]
-      : [
-          { a: paraA, b: paraB, mode: 'chars' },
-          { a: paraA, b: paraB, mode: 'lines' },
-          { a: displayA, b: displayB, mode: 'chars' },
-          { a: displayA, b: displayB, mode: 'lines' },
-          { a: canonA, b: canonB, mode: 'chars' },
-          { a: canonA, b: canonB, mode: 'lines' }
-        ];
+    const attempts = [
+      { a: paraA, b: paraB, mode: 'words' },
+      { a: displayA, b: displayB, mode: 'words' },
+      { a: canonA, b: canonB, mode: 'words' },
+      { a: paraA, b: paraB, mode: 'lines' },
+      { a: displayA, b: displayB, mode: 'lines' },
+      { a: canonA, b: canonB, mode: 'lines' },
+      { a: paraA, b: paraB, mode: 'chars' },
+      { a: displayA, b: displayB, mode: 'chars' },
+      { a: canonA, b: canonB, mode: 'chars' }
+    ];
 
-    let best = null;
-    let bestScore = -Infinity;
     let fallback = null;
     let fallbackScore = -Infinity;
 
@@ -2607,6 +2626,10 @@ function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
         console.warn(`[LicenseMatch][DisplayDiff] Wall-clock cap (${maxMs}ms) reached; stopping attempts early`);
         break;
       }
+
+      let best = null;
+      let bestScore = -Infinity;
+
       for (const timeout of timeouts) {
         // For long-text char-level, cap timeout at 3s to prevent runaway diff
         const effectiveTimeout = (isLongText && mode === 'chars')
@@ -2616,20 +2639,15 @@ function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
           const diff = runDisplayDiff(a, b, effectiveTimeout, mode);
           const degenerate = isDegenerate(diff, a.length, b.length);
           const hasEq = hasEqual(diff);
-          const meaningful = !degenerate && hasEq && hasMeaningfulOverlap(diff, a.length, b.length);
-
-          // Track best fallback (only requires some equal text)
-          if (!degenerate && hasEq) {
-            const score = evaluateDiffQuality(diff);
-            if (score > fallbackScore) {
-              fallback = diff;
-              fallbackScore = score;
-            }
-          }
-
-          if (!meaningful) continue;
+          if (degenerate || !hasEq) continue;
 
           const score = evaluateDiffQuality(diff);
+          if (score > fallbackScore) {
+            fallback = diff;
+            fallbackScore = score;
+          }
+
+          if (!hasMeaningfulOverlap(diff, a.length, b.length)) continue;
           if (score > bestScore) {
             best = diff;
             bestScore = score;
@@ -2638,19 +2656,22 @@ function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
           console.warn(`[LicenseMatch][DisplayDiff] mode=${mode} timeout=${timeout} failed`, err);
         }
       }
+
+      // Prefer the highest-priority mode that produced a usable diff instead of
+      // letting char-level noise outscore a clean word-level result.
+      if (best) return best;
     }
 
-    if (best) return best;
     if (fallback) {
       console.info('[LicenseMatch][DisplayDiff] Using fallback diff (did not pass strict quality checks)');
       return fallback;
     }
 
-    // Last resort: simple line-level diff with no quality gates
+    // Last resort: simple word-level diff with no quality gates
     try {
-      const lastResort = runDisplayDiff(paraA, paraB, 0, 'lines');
+      const lastResort = runDisplayDiff(paraA, paraB, 0, 'words');
       if (hasEqual(lastResort)) {
-        console.info('[LicenseMatch][DisplayDiff] Using last-resort line diff');
+        console.info('[LicenseMatch][DisplayDiff] Using last-resort word diff');
         return lastResort;
       }
     } catch { /* ignore */ }
@@ -2675,9 +2696,24 @@ function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
 
 function runDisplayDiff(a, b, timeout, mode = 'lines') {
   const previous = dmp.Diff_Timeout;
+  const previousEditCost = dmp.Diff_EditCost;
   try {
     dmp.Diff_Timeout = timeout;
     let diff;
+    if (mode === 'words') {
+      const { chars1, chars2, tokenArray } = diffWordsToChars(a, b);
+      diff = dmp.diff_main(chars1, chars2, false);
+      // Clean up while still token-encoded so boundaries stay on whole words.
+      dmp.diff_cleanupSemantic(diff);
+      // Edit cost is counted in tokens here, so keep it low.
+      dmp.Diff_EditCost = 2;
+      dmp.diff_cleanupEfficiency(diff);
+      diffCharsToWords(diff, tokenArray);
+      diff = mergeAdjacentDiffs(diff);
+      diff = hoistSharedWhitespaceAffixes(diff);
+      diff = collapseWhitespaceOnlyReplacements(diff);
+      return mergeAdjacentDiffs(diff);
+    }
     if (mode === 'lines') {
       const { chars1, chars2, lineArray } = dmp.diff_linesToChars_(a, b);
       diff = dmp.diff_main(chars1, chars2, false);
@@ -2687,11 +2723,204 @@ function runDisplayDiff(a, b, timeout, mode = 'lines') {
     }
     dmp.diff_cleanupSemantic(diff);
     dmp.diff_cleanupEfficiency(diff);
+    diff = snapDiffToWordBoundaries(diff);
+    diff = hoistSharedWhitespaceAffixes(diff);
     diff = collapseWhitespaceOnlyReplacements(diff);
-    return diff;
+    return mergeAdjacentDiffs(diff);
   } finally {
     dmp.Diff_Timeout = previous;
+    dmp.Diff_EditCost = previousEditCost;
   }
+}
+
+// Words, whitespace runs and standalone punctuation are each one token.
+const DIFF_WORD_TOKEN_RE = /[A-Za-z0-9]+(?:['\u2019_-][A-Za-z0-9]+)*|\s+|[^\sA-Za-z0-9]/g;
+const DIFF_WORD_TOKEN_LIMIT = 60000;
+
+function tokenizeForWordDiff(text) {
+  return String(text ?? '').match(DIFF_WORD_TOKEN_RE) || [];
+}
+
+function diffWordsToChars(text1, text2) {
+  const tokenArray = [];
+  const tokenHash = Object.create(null);
+
+  const encode = (text) => {
+    const tokens = tokenizeForWordDiff(text);
+    const codes = [];
+    for (const token of tokens) {
+      const existing = tokenHash[token];
+      if (existing !== undefined) {
+        codes.push(existing);
+        continue;
+      }
+      if (tokenArray.length >= DIFF_WORD_TOKEN_LIMIT) {
+        throw new Error('Word diff token limit exceeded');
+      }
+      const index = tokenArray.length;
+      tokenArray.push(token);
+      tokenHash[token] = index;
+      codes.push(index);
+    }
+    let out = '';
+    for (let i = 0; i < codes.length; i += 4096) {
+      out += String.fromCharCode.apply(null, codes.slice(i, i + 4096));
+    }
+    return out;
+  };
+
+  const chars1 = encode(text1);
+  const chars2 = encode(text2);
+  return { chars1, chars2, tokenArray };
+}
+
+function diffCharsToWords(diffs, tokenArray) {
+  for (let i = 0; i < diffs.length; i++) {
+    const chars = String(diffs[i][1] ?? '');
+    let text = '';
+    for (let j = 0; j < chars.length; j++) {
+      text += tokenArray[chars.charCodeAt(j)];
+    }
+    diffs[i][1] = text;
+  }
+}
+
+function normalizeDiffEntry(entry) {
+  if (!entry) return null;
+  if (Array.isArray(entry)) return { op: entry[0], data: String(entry[1] ?? '') };
+  if (typeof entry === 'object') {
+    const op = entry.op ?? entry.operation ?? entry.type ?? entry[0];
+    const data = entry.text ?? entry.data ?? entry[1];
+    if (op === undefined) return null;
+    return { op, data: String(data ?? '') };
+  }
+  return null;
+}
+
+function mergeAdjacentDiffs(diff) {
+  if (!Array.isArray(diff)) return diff;
+  const out = [];
+  for (const entry of diff) {
+    const normalized = normalizeDiffEntry(entry);
+    if (!normalized || normalized.data === '') continue;
+    const last = out[out.length - 1];
+    if (last && last[0] === normalized.op) {
+      last[1] += normalized.data;
+      continue;
+    }
+    out.push([normalized.op, normalized.data]);
+  }
+  return out;
+}
+
+// Moves whitespace shared by a delete/insert pair out of the highlight so the
+// markers sit on the changed words rather than on the surrounding spacing.
+function hoistSharedWhitespaceAffixes(diff) {
+  if (!Array.isArray(diff) || diff.length < 2) return diff;
+  const entries = diff.map(normalizeDiffEntry).filter(Boolean).map(({ op, data }) => [op, data]);
+  const out = [];
+
+  for (let i = 0; i < entries.length; i++) {
+    const [op, data] = entries[i];
+    const next = entries[i + 1];
+    const isPair = next && ((op === -1 && next[0] === 1) || (op === 1 && next[0] === -1));
+    if (!isPair) {
+      out.push([op, data]);
+      continue;
+    }
+
+    let a = data;
+    let b = next[1];
+    const leadA = (a.match(/^\s+/) || [''])[0];
+    const leadB = (b.match(/^\s+/) || [''])[0];
+    let lead = '';
+    if (leadA && leadB) {
+      lead = leadA.length <= leadB.length ? leadA : leadB;
+      a = a.slice(lead.length);
+      b = b.slice(lead.length);
+    }
+
+    const tailA = (a.match(/\s+$/) || [''])[0];
+    const tailB = (b.match(/\s+$/) || [''])[0];
+    let tail = '';
+    if (tailA && tailB) {
+      tail = tailA.length <= tailB.length ? tailA : tailB;
+      a = a.slice(0, a.length - tail.length);
+      b = b.slice(0, b.length - tail.length);
+    }
+
+    if (!a && !b) {
+      out.push([0, lead + tail]);
+      i++;
+      continue;
+    }
+
+    if (lead) out.push([0, lead]);
+    out.push([op, a]);
+    out.push([next[0], b]);
+    if (tail) out.push([0, tail]);
+    i++;
+  }
+
+  return out.filter(([, text]) => text !== '');
+}
+
+// Expands char-level edits outward so they never start or end mid-word.
+function snapDiffToWordBoundaries(diff) {
+  if (!Array.isArray(diff) || diff.length < 2) return diff;
+  const entries = diff.map(normalizeDiffEntry).filter(Boolean).map(({ op, data }) => [op, data]);
+  const isWordChar = (ch) => !!ch && /[A-Za-z0-9]/.test(ch);
+
+  // A fragment may only be pushed into an edit run that has both a delete and
+  // an insert; otherwise one of the two source texts would be altered.
+  const runIsBalanced = (start, step) => {
+    let hasDelete = false;
+    let hasInsert = false;
+    for (let j = start; j >= 0 && j < entries.length; j += step) {
+      const op = entries[j][0];
+      if (op === 0) break;
+      if (op === -1) hasDelete = true;
+      if (op === 1) hasInsert = true;
+    }
+    return hasDelete && hasInsert;
+  };
+
+  for (let i = 0; i < entries.length; i++) {
+    const [op, data] = entries[i];
+    if (op !== 0 || !data) continue;
+
+    const prevOps = runIsBalanced(i - 1, -1);
+    const nextOps = runIsBalanced(i + 1, 1);
+
+    // Trailing partial word of an equality that is followed by an edit.
+    if (nextOps && isWordChar(data.slice(-1))) {
+      const match = data.match(/[A-Za-z0-9]+(?:['\u2019_-][A-Za-z0-9]+)*$/);
+      const fragment = match ? match[0] : '';
+      if (fragment && fragment.length < data.length) {
+        entries[i][1] = data.slice(0, data.length - fragment.length);
+        for (let j = i + 1; j < entries.length; j++) {
+          if (entries[j][0] === 0) break;
+          entries[j][1] = fragment + entries[j][1];
+        }
+      }
+    }
+
+    const current = entries[i][1];
+    // Leading partial word of an equality that is preceded by an edit.
+    if (prevOps && current && isWordChar(current.charAt(0))) {
+      const match = current.match(/^[A-Za-z0-9]+(?:['\u2019_-][A-Za-z0-9]+)*/);
+      const fragment = match ? match[0] : '';
+      if (fragment && fragment.length < current.length) {
+        entries[i][1] = current.slice(fragment.length);
+        for (let j = i - 1; j >= 0; j--) {
+          if (entries[j][0] === 0) break;
+          entries[j][1] = entries[j][1] + fragment;
+        }
+      }
+    }
+  }
+
+  return entries.filter(([, text]) => text !== '');
 }
 
 function collapseWhitespaceOnlyReplacements(diff) {
