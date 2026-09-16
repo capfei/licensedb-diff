@@ -1991,13 +1991,14 @@ async function getLicenseDbVersion(force = false) {
   try {
     if (!force) {
       const cached = await getCachedLicenseDbVersion();
-      if (cached && cached.timestamp) {
+      // A cached fingerprint means the footer parse failed last time; retry it.
+      if (cached && cached.timestamp && !String(cached.version || '').startsWith('idx-')) {
         const ageMs = Date.now() - new Date(cached.timestamp).getTime();
         if (ageMs < 24 * 60 * 60 * 1000) return cached.version || null; // cache < 1 day
       }
     }
     // Preferred: parse the user-facing footer text from index.html,
-    // e.g. "Generated with ScanCode toolkit 32.5.0 on 2026-01-22."
+    // e.g. "Generated with ScanCode toolkit 33.0.0rc1 on 2026-09-14."
     try {
       const htmlResp = await fetch(SCAN_ENDPOINTS.scancodeIndexHtml, { cache: 'no-cache' });
       if (htmlResp.ok) {
@@ -2005,7 +2006,8 @@ async function getLicenseDbVersion(force = false) {
         // Strip HTML tags and collapse whitespace before matching, so inline
         // elements (e.g. <a>, <b>) around the version or date don't break the regex
         const plainText = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-        const match = plainText.match(/Generated\s+with\s+ScanCode\s+toolkit\s+([0-9]+(?:\.[0-9]+)*)\s+on\s+(\d{4}-\d{2}-\d{2})/i);
+        // Version starts with a digit and may carry a pre-release suffix (33.0.0rc1).
+        const match = plainText.match(/Generated\s+with\s+ScanCode\s+toolkit\s+([0-9][^\s]*?)\s+on\s+(\d{4}-\d{2}-\d{2})/i);
         if (match) {
           const toolkitVersion = match[1];
           const generatedDate = match[2];
