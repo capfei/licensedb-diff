@@ -2989,15 +2989,72 @@ function renderDiffHtml(diff) {
     .replace(/>/g, '&gt;')
     .replace(/\t/g, '    ');
 
-  const formatDiffText = (text) => escapeHtmlFragment(text);
+  const countWords = (text) => (String(text).match(/[A-Za-z0-9]+(?:['\u2019_-][A-Za-z0-9]+)*/g) || []).length;
 
-  const renderBody = (op, chunk) => {
-    const formatted = formatDiffText(chunk ?? '');
-    if (op === 1) return `<ins>${formatted}</ins>`;
-    if (op === -1) return `<del>${formatted}</del>`;
-    return `<span>${formatted}</span>`;
+  let sameWords = 0;
+  let addedWords = 0;
+  let removedWords = 0;
+  for (const [op, data] of sanitized) {
+    if (op === 0) sameWords += countWords(data);
+    else if (op === 1) addedWords += countWords(data);
+    else removedWords += countWords(data);
+  }
+
+  const referenceWords = sameWords + removedWords;
+  const selectionWords = sameWords + addedWords;
+  const totalWords = sameWords + addedWords + removedWords;
+  const matchPct = totalWords ? (sameWords / totalWords) * 100 : 0;
+
+  // Long unchanged runs are split so the UI can fold the middle away.
+  const CONTEXT_FOLD_MIN = 240;
+  const CONTEXT_KEEP = 110;
+
+  const renderEqual = (chunk) => {
+    if (chunk.length < CONTEXT_FOLD_MIN) {
+      return `<span class="ldiff-equal">${escapeHtmlFragment(chunk)}</span>`;
+    }
+    const head = chunk.slice(0, CONTEXT_KEEP);
+    const mid = chunk.slice(CONTEXT_KEEP, chunk.length - CONTEXT_KEEP);
+    const tail = chunk.slice(chunk.length - CONTEXT_KEEP);
+    const foldedWords = countWords(mid);
+    return '<span class="ldiff-equal">' +
+      `<span class="ldiff-ctx-edge">${escapeHtmlFragment(head)}</span>` +
+      `<span class="ldiff-ctx-fold" aria-hidden="true"> \u2026 ${foldedWords} unchanged words \u2026 </span>` +
+      `<span class="ldiff-ctx-mid">${escapeHtmlFragment(mid)}</span>` +
+      `<span class="ldiff-ctx-edge">${escapeHtmlFragment(tail)}</span>` +
+      '</span>';
   };
 
-  const html = sanitized.map(([op, data]) => renderBody(op, data)).join('');
-  return `<pre class="ldiff-output">${html}</pre>`;
+  let changeIndex = 0;
+  let inChangeRun = false;
+  const body = sanitized.map(([op, data]) => {
+    if (op === 0) {
+      inChangeRun = false;
+      return renderEqual(data);
+    }
+    // A delete immediately followed by an insert counts as one navigable change.
+    if (!inChangeRun) {
+      changeIndex++;
+      inChangeRun = true;
+    }
+    const tag = op === 1 ? 'ins' : 'del';
+    const label = op === 1 ? 'in selection only' : 'in reference only';
+    return `<${tag} class="ldiff-change" data-ldiff-change="${changeIndex}" title="${label}">${escapeHtmlFragment(data)}</${tag}>`;
+  }).join('');
+
+  const fmt = (n) => n.toLocaleString('en-US');
+  // Chip colors double as the legend, so no separate legend row is emitted.
+  const summary =
+    '<div class="ldiff-summary">' +
+      `<span class="ldiff-chip ldiff-chip-score" title="Identical words as a share of all words across both texts">${matchPct.toFixed(1)}% word overlap</span>` +
+      `<span class="ldiff-chip ldiff-chip-same" title="Words present in both texts">${fmt(sameWords)} unchanged</span>` +
+      `<span class="ldiff-chip ldiff-chip-ins" title="Words only in the selected text">+${fmt(addedWords)} only in selection</span>` +
+      `<span class="ldiff-chip ldiff-chip-del" title="Words only in the reference license">\u2212${fmt(removedWords)} only in reference</span>` +
+      `<span class="ldiff-chip ldiff-chip-muted" title="Selected text vs reference license">${fmt(selectionWords)} vs ${fmt(referenceWords)} words</span>` +
+    '</div>';
+
+  return '<div class="ldiff-wrap" data-ldiff-changes="' + changeIndex + '">' +
+    summary +
+    `<pre class="ldiff-output" tabindex="0">${body}</pre>` +
+  '</div>';
 }

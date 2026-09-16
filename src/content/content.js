@@ -173,13 +173,93 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     `;
     groupingRow.appendChild(groupingLabel);
     groupingRow.appendChild(groupingSelect);
+    toolbar.insertBefore(groupingRow, closeButton);
 
-    const dropdown = createEl('select');
-    dropdown.id = 'license-diff-dropdown';
-    setDisplay(dropdown, 'none');
-    uiContainer.appendChild(groupingRow);
-    uiContainer.appendChild(dropdown);
+    // Custom listbox: a native <select> cannot render two-line rows with a
+    // right-aligned score and a muted source line.
+    const picker = createEl('div');
+    picker.id = 'license-diff-picker';
+    setDisplay(picker, 'none');
+
+    const pickerButton = createEl('button');
+    pickerButton.type = 'button';
+    pickerButton.id = 'license-diff-picker-button';
+    pickerButton.setAttribute('role', 'combobox');
+    pickerButton.setAttribute('aria-haspopup', 'listbox');
+    pickerButton.setAttribute('aria-expanded', 'false');
+    pickerButton.setAttribute('aria-controls', 'license-diff-picker-list');
+    pickerButton.setAttribute('aria-label', 'Matched license');
+
+    const pickerList = createEl('ul');
+    pickerList.id = 'license-diff-picker-list';
+    pickerList.setAttribute('role', 'listbox');
+    pickerList.setAttribute('tabindex', '-1');
+    setDisplay(pickerList, 'none');
+
+    picker.appendChild(pickerButton);
+    picker.appendChild(pickerList);
+
+    uiContainer.appendChild(picker);
     uiContainer.appendChild(linkDisplay);
+
+    const metaPanel = createEl('div');
+    metaPanel.id = 'license-diff-meta';
+    setDisplay(metaPanel, 'none');
+    uiContainer.appendChild(metaPanel);
+
+    const diffToolbar = createEl('div');
+    diffToolbar.id = 'license-diff-diff-toolbar';
+    setDisplay(diffToolbar, 'none');
+
+    const changeNav = createEl('div');
+    changeNav.className = 'ldiff-nav';
+    const prevChangeBtn = createEl('button');
+    prevChangeBtn.type = 'button';
+    prevChangeBtn.className = 'ldiff-tool-btn';
+    prevChangeBtn.textContent = '\u2191';
+    prevChangeBtn.title = 'Previous change';
+    prevChangeBtn.setAttribute('aria-label', 'Previous change');
+    const changeCounter = createEl('span');
+    changeCounter.className = 'ldiff-nav-counter';
+    changeCounter.setAttribute('aria-live', 'polite');
+    const nextChangeBtn = createEl('button');
+    nextChangeBtn.type = 'button';
+    nextChangeBtn.className = 'ldiff-tool-btn';
+    nextChangeBtn.textContent = '\u2193';
+    nextChangeBtn.title = 'Next change';
+    nextChangeBtn.setAttribute('aria-label', 'Next change');
+    changeNav.appendChild(prevChangeBtn);
+    changeNav.appendChild(changeCounter);
+    changeNav.appendChild(nextChangeBtn);
+
+    const toolSpacer = createEl('div');
+    toolSpacer.className = 'ldiff-tool-spacer';
+
+    const foldToggle = createEl('button');
+    foldToggle.type = 'button';
+    foldToggle.className = 'ldiff-tool-btn ldiff-tool-toggle';
+    foldToggle.textContent = 'Only changes';
+    foldToggle.title = 'Collapse long unchanged passages';
+    foldToggle.setAttribute('aria-pressed', 'false');
+
+    const copyDiffBtn = createEl('button');
+    copyDiffBtn.type = 'button';
+    copyDiffBtn.className = 'ldiff-tool-btn';
+    copyDiffBtn.textContent = 'Copy diff';
+    copyDiffBtn.title = 'Copy the diff as text';
+
+    const copyRefBtn = createEl('button');
+    copyRefBtn.type = 'button';
+    copyRefBtn.className = 'ldiff-tool-btn';
+    copyRefBtn.textContent = 'Copy reference';
+    copyRefBtn.title = 'Copy the reference license text';
+
+    diffToolbar.appendChild(changeNav);
+    diffToolbar.appendChild(toolSpacer);
+    diffToolbar.appendChild(foldToggle);
+    diffToolbar.appendChild(copyDiffBtn);
+    diffToolbar.appendChild(copyRefBtn);
+    uiContainer.appendChild(diffToolbar);
 
     const diffContainer = createEl('div');
     diffContainer.id = 'license-diff-display';
@@ -189,45 +269,223 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     ensureMounted();
 
     let matches = [];
+    let selectedMatchKey = null;
+    let activeOptionIndex = -1;
+    let onSelectionChange = null;
 
-    function renderMatchOptions(selectedMatchKey = null) {
-      safeClearHTML(dropdown);
+    const getOptionNodes = () => Array.from(pickerList.querySelectorAll?.('[role="option"]') || []);
 
-      const appendOption = (m, targetParent = dropdown) => {
-        const pct = prettyPercent(m.charSimilarity);
-        const deprecatedSuffix = m.deprecated ? ' [deprecated]' : '';
-        const opt = createEl('option');
-        opt.value = m.matchKey;
-        opt.textContent = pct
-          ? `${m.license} • ${pct} • ${m.sourceLabel || getSourceLabel(m.source)}${deprecatedSuffix}`
-          : `${m.license} • ${m.sourceLabel || getSourceLabel(m.source)}${deprecatedSuffix}`;
-        targetParent.appendChild(opt);
-      };
+    function buildOptionRow(m, index) {
+      const pct = prettyPercent(m.charSimilarity);
+      const sourceLabel = m.sourceLabel || getSourceLabel(m.source);
+
+      const row = createEl('li');
+      row.className = 'ldiff-opt';
+      row.id = `license-diff-opt-${index}`;
+      row.setAttribute('role', 'option');
+      row.setAttribute('data-key', m.matchKey);
+      row.setAttribute('aria-selected', String(m.matchKey === selectedMatchKey));
+      row.title = m.name || m.license;
+
+      const main = createEl('span');
+      main.className = 'ldiff-opt-main';
+      const id = createEl('span');
+      id.className = 'ldiff-opt-id';
+      id.textContent = m.license;
+      const score = createEl('span');
+      score.className = 'ldiff-opt-pct';
+      score.textContent = pct;
+      main.appendChild(id);
+      main.appendChild(score);
+
+      const sub = createEl('span');
+      sub.className = 'ldiff-opt-sub';
+      const src = createEl('span');
+      src.className = `ldiff-opt-src ${getSourceClass(m.source)}`;
+      src.textContent = sourceLabel;
+      sub.appendChild(src);
+      if (m.deprecated) {
+        const flag = createEl('span');
+        flag.className = 'ldiff-opt-flag';
+        flag.textContent = 'deprecated';
+        sub.appendChild(flag);
+      }
+
+      row.appendChild(main);
+      row.appendChild(sub);
+      return row;
+    }
+
+    function renderPickerButton() {
+      safeClearHTML(pickerButton);
+      const m = matches.find(x => x.matchKey === selectedMatchKey);
+      if (!m) {
+        pickerButton.textContent = 'No matches';
+        return;
+      }
+      const row = buildOptionRow(m, 'selected');
+      row.removeAttribute('role');
+      row.removeAttribute('id');
+      row.className = 'ldiff-opt ldiff-opt-current';
+      pickerButton.appendChild(row);
+      const caret = createEl('span');
+      caret.className = 'ldiff-picker-caret';
+      caret.setAttribute('aria-hidden', 'true');
+      pickerButton.appendChild(caret);
+    }
+
+    function renderMatchOptions(preferredKey = null) {
+      safeClearHTML(pickerList);
+
+      const uniqueSources = new Set(matches.map(m => m.source || 'licensedb'));
+
+      if (matches.length) {
+        selectedMatchKey = (preferredKey && matches.some(m => m.matchKey === preferredKey))
+          ? preferredKey
+          : matches[0].matchKey;
+      } else {
+        selectedMatchKey = null;
+      }
+
+      let index = 0;
+      const appendRow = (m) => pickerList.appendChild(buildOptionRow(m, index++));
 
       if (resultGroupingMode === 'bySource') {
         ['licensedb', 'spdx'].forEach((sourceKey) => {
           const sourceItems = matches.filter(m => (m.source || 'licensedb') === sourceKey);
           if (!sourceItems.length) return;
-          const group = createEl('optgroup');
-          group.label = getSourceLabel(sourceKey);
-          sourceItems.forEach(m => appendOption(m, group));
-          dropdown.appendChild(group);
+          const heading = createEl('li');
+          heading.className = 'ldiff-opt-group';
+          heading.setAttribute('role', 'presentation');
+          heading.textContent = getSourceLabel(sourceKey);
+          pickerList.appendChild(heading);
+          sourceItems.forEach(appendRow);
         });
       } else {
-        matches.forEach(m => appendOption(m, dropdown));
+        matches.forEach(appendRow);
       }
 
-      const uniqueSources = new Set(matches.map(m => m.source || 'licensedb'));
       setDisplay(groupingRow, (matches.length && uniqueSources.size > 1) ? 'flex' : 'none');
+      renderPickerButton();
+      syncActiveOption();
+    }
 
-      if (matches.length) {
-        if (selectedMatchKey && matches.some(m => m.matchKey === selectedMatchKey)) {
-          dropdown.value = selectedMatchKey;
-        } else {
-          dropdown.selectedIndex = 0;
-        }
+    function syncActiveOption() {
+      const nodes = getOptionNodes();
+      nodes.forEach((node) => {
+        const isSelected = node.getAttribute('data-key') === selectedMatchKey;
+        node.setAttribute('aria-selected', String(isSelected));
+        if (isSelected) addClass(node, 'is-selected');
+        else removeClass(node, 'is-selected');
+      });
+      activeOptionIndex = nodes.findIndex(n => n.getAttribute('data-key') === selectedMatchKey);
+      highlightActiveOption();
+    }
+
+    function highlightActiveOption(scroll = false) {
+      const nodes = getOptionNodes();
+      nodes.forEach(n => removeClass(n, 'is-active'));
+      const node = nodes[activeOptionIndex];
+      if (!node) {
+        pickerButton.removeAttribute('aria-activedescendant');
+        return;
+      }
+      addClass(node, 'is-active');
+      pickerButton.setAttribute('aria-activedescendant', node.id);
+      if (scroll) {
+        try { node.scrollIntoView({ block: 'nearest' }); } catch { /* ignore */ }
       }
     }
+
+    const isPickerOpen = () => pickerButton.getAttribute('aria-expanded') === 'true';
+
+    function openPicker() {
+      if (!matches.length || isPickerOpen()) return;
+      pickerButton.setAttribute('aria-expanded', 'true');
+      setDisplay(pickerList, 'block');
+      syncActiveOption();
+      highlightActiveOption(true);
+    }
+
+    function closePicker(focusButton = false) {
+      if (!isPickerOpen()) return;
+      pickerButton.setAttribute('aria-expanded', 'false');
+      setDisplay(pickerList, 'none');
+      if (focusButton) { try { pickerButton.focus(); } catch { /* ignore */ } }
+    }
+
+    function selectMatch(key, { fire = true } = {}) {
+      if (!key || !matches.some(m => m.matchKey === key)) return;
+      selectedMatchKey = key;
+      renderPickerButton();
+      syncActiveOption();
+      if (fire) onSelectionChange?.();
+    }
+
+    function moveActiveOption(step) {
+      const nodes = getOptionNodes();
+      if (!nodes.length) return;
+      activeOptionIndex = activeOptionIndex < 0
+        ? (step > 0 ? 0 : nodes.length - 1)
+        : Math.min(nodes.length - 1, Math.max(0, activeOptionIndex + step));
+      highlightActiveOption(true);
+    }
+
+    pickerButton.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (isPickerOpen()) closePicker();
+      else openPicker();
+    });
+
+    pickerButton.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!isPickerOpen()) { openPicker(); return; }
+        moveActiveOption(e.key === 'ArrowDown' ? 1 : -1);
+      } else if (e.key === 'Home' || e.key === 'End') {
+        if (!isPickerOpen()) return;
+        e.preventDefault();
+        activeOptionIndex = e.key === 'Home' ? 0 : getOptionNodes().length - 1;
+        highlightActiveOption(true);
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        if (!isPickerOpen()) return;
+        e.preventDefault();
+        const node = getOptionNodes()[activeOptionIndex];
+        if (node) selectMatch(node.getAttribute('data-key'));
+        closePicker(true);
+      } else if (e.key === 'Escape' && isPickerOpen()) {
+        e.preventDefault();
+        e.stopPropagation();
+        closePicker(true);
+      }
+    });
+
+    pickerList.addEventListener('click', (e) => {
+      const node = e.target?.closest?.('[role="option"]');
+      if (!node) return;
+      e.preventDefault();
+      e.stopPropagation();
+      selectMatch(node.getAttribute('data-key'));
+      closePicker(true);
+    });
+
+    pickerList.addEventListener('mousemove', (e) => {
+      const node = e.target?.closest?.('[role="option"]');
+      if (!node) return;
+      const nodes = getOptionNodes();
+      const index = nodes.indexOf(node);
+      if (index >= 0 && index !== activeOptionIndex) {
+        activeOptionIndex = index;
+        highlightActiveOption();
+      }
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!isPickerOpen()) return;
+      if (picker.contains?.(e.target)) return;
+      closePicker();
+    }, true);
 
     function prettyPercent(pStr) {
       if (pStr === undefined || pStr === null || pStr === '') return '';
@@ -238,6 +496,186 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
 
     const getSourceClass = (source) => (source === 'spdx' ? 'source-spdx' : 'source-licensedb');
     const getSourceLabel = (source) => (source === 'spdx' ? 'SPDX' : 'ScanCode');
+
+    function renderMetaPanel(match) {
+      safeClearHTML(metaPanel);
+      if (!match) {
+        setDisplay(metaPanel, 'none');
+        return;
+      }
+
+      const addChip = (label, value, className = '') => {
+        if (!value) return;
+        const chip = createEl('span');
+        chip.className = `ldiff-metric${className ? ` ${className}` : ''}`;
+        const key = createEl('span');
+        key.className = 'ldiff-metric-key';
+        key.textContent = label;
+        const val = createEl('span');
+        val.className = 'ldiff-metric-val';
+        val.textContent = value;
+        chip.appendChild(key);
+        chip.appendChild(val);
+        metaPanel.appendChild(chip);
+      };
+
+      if (match.templateMatch) {
+        const badge = createEl('span');
+        badge.className = 'ldiff-metric ldiff-metric-flag';
+        badge.textContent = 'Template match';
+        badge.title = 'Matched the license template exactly, ignoring variable fields';
+        metaPanel.appendChild(badge);
+      }
+
+      const metrics = match.diffMetrics || {};
+      addChip('Score', prettyPercent(match.charSimilarity), 'ldiff-metric-primary');
+      addChip('Containment', prettyPercent(metrics.containment));
+      addChip('Cosine', prettyPercent(metrics.cosine));
+      addChip('Token Lev.', prettyPercent(metrics.tokenLevenshtein));
+      addChip('Avg', prettyPercent(metrics.avg));
+      addChip('Jaccard', prettyPercent(metrics.jaccard));
+
+      setDisplay(metaPanel, metaPanel.childNodes.length ? 'flex' : 'none');
+    }
+
+    let changeAnchors = [];
+    let currentChangeIndex = -1;
+
+    const prefersReducedMotion = () => {
+      try { return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true; }
+      catch { return false; }
+    };
+
+    const getDiffOutput = () => diffContainer.querySelector?.('.ldiff-output') || null;
+
+    function updateChangeCounter() {
+      const total = changeAnchors.length;
+      if (!total) {
+        changeCounter.textContent = 'No differences';
+        return;
+      }
+      changeCounter.textContent = currentChangeIndex < 0
+        ? `${total} change${total === 1 ? '' : 's'}`
+        : `${currentChangeIndex + 1} / ${total}`;
+    }
+
+    function refreshDiffTools() {
+      const output = getDiffOutput();
+      changeAnchors = [];
+      currentChangeIndex = -1;
+
+      if (output) {
+        const seen = new Set();
+        output.querySelectorAll('[data-ldiff-change]').forEach((node) => {
+          const id = node.getAttribute('data-ldiff-change');
+          if (seen.has(id)) return;
+          seen.add(id);
+          changeAnchors.push(node);
+        });
+        if (foldToggle.getAttribute('aria-pressed') === 'true') addClass(output, 'ldiff-folded');
+      }
+
+      updateChangeCounter();
+      setDisplay(diffToolbar, output ? 'flex' : 'none');
+      prevChangeBtn.disabled = !changeAnchors.length;
+      nextChangeBtn.disabled = !changeAnchors.length;
+    }
+
+    function gotoChange(step) {
+      if (!changeAnchors.length) return;
+      const total = changeAnchors.length;
+      currentChangeIndex = currentChangeIndex < 0
+        ? (step > 0 ? 0 : total - 1)
+        : (currentChangeIndex + step + total) % total;
+
+      const target = changeAnchors[currentChangeIndex];
+      const id = target.getAttribute('data-ldiff-change');
+      const output = getDiffOutput();
+      output?.querySelectorAll('.ldiff-current').forEach(n => removeClass(n, 'ldiff-current'));
+      output?.querySelectorAll(`[data-ldiff-change="${id}"]`).forEach(n => addClass(n, 'ldiff-current'));
+
+      try {
+        target.scrollIntoView({ block: 'center', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+      } catch {
+        try { target.scrollIntoView(); } catch { /* ignore */ }
+      }
+      updateChangeCounter();
+    }
+
+    // Rebuilds the two source texts from the rendered diff, skipping fold placeholders.
+    function extractDiffTexts() {
+      const output = getDiffOutput();
+      if (!output) return null;
+
+      let reference = '';
+      let selection = '';
+      let marked = '';
+      for (const node of Array.from(output.children)) {
+        const tag = (node.tagName || '').toLowerCase();
+        if (tag === 'ins') {
+          selection += node.textContent;
+          marked += `{+${node.textContent}+}`;
+        } else if (tag === 'del') {
+          reference += node.textContent;
+          marked += `[-${node.textContent}-]`;
+        } else {
+          const parts = Array.from(node.children);
+          const text = parts.length
+            ? parts.filter(c => !hasClass(c, 'ldiff-ctx-fold')).map(c => c.textContent).join('')
+            : node.textContent;
+          reference += text;
+          selection += text;
+          marked += text;
+        }
+      }
+      return { reference, selection, marked };
+    }
+
+    function copyToClipboard(text, successMessage) {
+      if (!text) {
+        showNotification('Nothing to copy', 'warning', 2000);
+        return;
+      }
+      navigator.clipboard.writeText(text)
+        .then(() => showNotification(successMessage, 'success', 2000))
+        .catch((err) => {
+          console.error('Clipboard write failed:', err);
+          showNotification('Failed to copy to clipboard', 'error');
+        });
+    }
+
+    prevChangeBtn.addEventListener('click', () => gotoChange(-1));
+    nextChangeBtn.addEventListener('click', () => gotoChange(1));
+
+    foldToggle.addEventListener('click', () => {
+      const next = foldToggle.getAttribute('aria-pressed') !== 'true';
+      foldToggle.setAttribute('aria-pressed', String(next));
+      const output = getDiffOutput();
+      if (!output) return;
+      if (next) addClass(output, 'ldiff-folded');
+      else removeClass(output, 'ldiff-folded');
+    });
+
+    copyDiffBtn.addEventListener('click', () => {
+      // [-removed-] / {+added+} markers keep the diff readable as plain text.
+      copyToClipboard(extractDiffTexts()?.marked || '', 'Diff copied to clipboard');
+    });
+
+    copyRefBtn.addEventListener('click', () => {
+      copyToClipboard(extractDiffTexts()?.reference || '', 'Reference license copied to clipboard');
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if ((uiContainer.style?.display || '') !== 'flex') return;
+      if (e.key === 'Escape') {
+        setDisplay(uiContainer, 'none');
+        return;
+      }
+      if (!changeAnchors.length) return;
+      if (!uiContainer.contains?.(document.activeElement)) return;
+      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); gotoChange(1); }
+      else if (e.key === 'p' || e.key === 'P') { e.preventDefault(); gotoChange(-1); }
+    });
 
 
     function showNotification(message, type = 'info', duration = 5000) {
@@ -298,9 +736,8 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       try { ext.storage?.sync?.set({ resultGrouping: resultGroupingMode }); } catch { /* ignore */ }
 
       if (!matches.length) return;
-      const selectedMatchKey = dropdown.value;
       renderMatchOptions(selectedMatchKey);
-      dropdown.onchange?.();
+      onSelectionChange?.();
     });
 
     try {
@@ -315,9 +752,8 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
             resultGroupingMode = changes.resultGrouping.newValue === 'bySource' ? 'bySource' : 'overall';
             groupingSelect.value = resultGroupingMode;
             if (matches.length) {
-              const selectedMatchKey = dropdown.value;
               renderMatchOptions(selectedMatchKey);
-              dropdown.onchange?.();
+              onSelectionChange?.();
             }
           }
         }
@@ -339,14 +775,25 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
           updateDiffSizing();
           sendResponse({ success: true });
         } else if (message.action === 'clearResults') {
-          safeClearHTML(dropdown);
-          setDisplay(dropdown, 'none');
+          closePicker();
+          safeClearHTML(pickerList);
+          safeClearHTML(pickerButton);
+          setDisplay(picker, 'none');
+          selectedMatchKey = null;
+          activeOptionIndex = -1;
 
           setDisplay(linkDisplay, 'none');
           safeClearHTML(linkDisplay);
 
           setDisplay(diffContainer, 'none');
           safeClearHTML(diffContainer);
+
+          setDisplay(metaPanel, 'none');
+          safeClearHTML(metaPanel);
+
+          setDisplay(diffToolbar, 'none');
+          changeAnchors = [];
+          currentChangeIndex = -1;
 
           setDisplay(groupingRow, 'none');
 
@@ -390,7 +837,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
           removeClass(progressEl, 'animating');
 
           matches = Array.isArray(message.matches) ? message.matches : [];
-          safeClearHTML(dropdown);
+          safeClearHTML(pickerList);
 
           matches.forEach(m => {
             const matchKey = `${m.source || 'licensedb'}:${m.license}`;
@@ -405,15 +852,15 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
               <span class="spdx-container">
                 <span class="spdx-id">(${m.spdx})</span>
                 <button class="copy-spdx-button" data-spdx="${m.spdx}" title="Copy ID">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                 </button>
               </span>`;
           });
 
           renderMatchOptions();
 
-          dropdown.onchange = () => {
-            const sel = matches.find(m => m.matchKey === dropdown.value);
+          onSelectionChange = () => {
+            const sel = matches.find(m => m.matchKey === selectedMatchKey);
             if (!sel) return;
 
             safeSetHTML(linkDisplay, sel.link);
@@ -428,19 +875,22 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
               }, { passive: false });
             }
 
+            renderMetaPanel(sel);
+
             safeSetHTML(diffContainer, sel.diff !== null
               ? sel.diff
               : '<div class="ldiff-pending">Generating diff\u2026</div>');
+            refreshDiffTools();
             updateDiffSizing();
             setupCopyButtons();
           };
 
-          setDisplay(dropdown, 'block');
+          setDisplay(picker, 'block');
           setDisplay(linkDisplay, 'block');
           setDisplay(diffContainer, 'block');
 
           if (matches.length) {
-            dropdown.onchange();
+            onSelectionChange();
           }
 
           const hasPendingDiffs = matches.some(m => m.diff === null);
@@ -456,11 +906,12 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
           const match = matches.find(m => m.matchKey === message.matchKey);
           if (match) {
             match.diff = message.diff;
-            // If this match is currently selected in the dropdown, refresh its diff view
-            if (dropdown.value === message.matchKey) {
+            // If this match is currently selected, refresh its diff view
+            if (selectedMatchKey === message.matchKey) {
               safeSetHTML(diffContainer, match.diff !== null
                 ? match.diff
                 : '<div class="ldiff-pending">Generating diff\u2026</div>');
+              refreshDiffTools();
               updateDiffSizing();
             }
             // Hide status and progress bar when all diffs have arrived
@@ -488,7 +939,9 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     });
 
     function setupCopyButtons() {
-      document.querySelectorAll('.copy-spdx-button').forEach(button => {
+      // Scoped to the link row and guarded so re-renders don't stack listeners.
+      linkDisplay.querySelectorAll?.('.copy-spdx-button:not([data-ldiff-bound])').forEach(button => {
+        button.setAttribute('data-ldiff-bound', '1');
         button.addEventListener('click', function(e) {
           e.preventDefault();
           e.stopPropagation();
