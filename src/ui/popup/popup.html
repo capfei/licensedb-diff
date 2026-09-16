@@ -5,17 +5,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>License Diff</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 12px; width: 220px; background-color: #ffffff; color: #333333; }
-    fieldset { border: none; padding: 0; margin: 0 0 8px 0; }
-    legend { font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #5f6771; margin-bottom: 4px; padding: 0; }
-    label { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-    button { width: 100%; padding: 6px; margin-top: 8px; background-color: #4CAF50; color: #000000; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
-    button:hover { background-color: #3d8b3d; }
+    /* Sans-serif here on purpose: the popup is a settings form, not code. */
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 13px;
+      line-height: 1.45;
+      margin: 14px;
+      width: 214px;
+      background-color: #ffffff;
+      color: #333333;
+      accent-color: #2e7d32;
+    }
+    fieldset { border: none; padding: 0; margin: 0 0 14px 0; }
+    legend { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #5f6771; margin-bottom: 6px; padding: 0; }
+    label { display: flex; align-items: center; gap: 8px; padding: 3px 0; cursor: pointer; }
+    input[type="radio"], input[type="checkbox"] { margin: 0; flex: none; }
+    button { width: 100%; padding: 8px 12px; margin-top: 2px; background-color: #2e7d32; color: #ffffff; border: none; border-radius: 6px; cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 600; }
+    button:hover { background-color: #1b5e20; }
+    :focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 
-    body.theme-dark { background-color: #0d1117; color: #f0f6fc; }
-    body.theme-dark legend { color: #8b949e; }
-    body.theme-dark button { background-color: #238636; color: #ffffff; }
+    body.theme-dark { background-color: #0d1117; color: #f0f6fc; accent-color: #3fb950; }
+    body.theme-dark legend { color: #a9b1ba; }
+    body.theme-dark button { background-color: #238636; }
     body.theme-dark button:hover { background-color: #2ea043; }
+    body.theme-dark :focus-visible { outline-color: #79b8ff; }
   </style>
 </head>
 <body>

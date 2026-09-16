@@ -70,7 +70,7 @@ async function loadUserSettingsToForm() {
 
 async function saveUserSettingsFromForm() {
   const statusEl = document.getElementById('save-status');
-  statusEl.textContent = '';
+  setSaveStatus(statusEl, '', null);
 
   let maxResults = parseInt(document.getElementById('max-results').value, 10);
   let minSimilarityPct = Number(document.getElementById('min-similarity').value);
@@ -84,19 +84,30 @@ async function saveUserSettingsFromForm() {
 
   try {
     await storageSet({ maxResults, minSimilarityPct });
-    statusEl.style.color = '#4CAF50';
-    statusEl.textContent = 'Saved';
-    setTimeout(() => (statusEl.textContent = ''), 1500);
+    setSaveStatus(statusEl, 'Saved', 'is-ok');
+    setTimeout(() => setSaveStatus(statusEl, '', null), 1500);
   } catch (e) {
-    statusEl.style.color = '#dc3545';
-    statusEl.textContent = 'Error saving';
+    setSaveStatus(statusEl, 'Error saving', 'is-error');
   }
+}
+
+function applyTheme(theme) {
+  document.body.classList.toggle('theme-dark', theme === 'dark');
+}
+
+function setSaveStatus(el, text, state) {
+  if (!el) return;
+  el.classList.remove('is-ok', 'is-error');
+  if (state) el.classList.add(state);
+  el.textContent = text;
 }
 
 async function loadThemeToForm() {
   const { theme } = await storageGet(DEFAULT_APPEARANCE);
   const sel = document.getElementById('theme-select');
-  if (sel) sel.value = (theme === 'dark' ? 'dark' : 'light');
+  const resolved = theme === 'dark' ? 'dark' : 'light';
+  if (sel) sel.value = resolved;
+  applyTheme(resolved);
 }
 
 async function saveThemeFromForm() {
@@ -105,16 +116,11 @@ async function saveThemeFromForm() {
   const value = sel?.value === 'dark' ? 'dark' : 'light';
   try {
     await storageSet({ theme: value });
-    if (statusEl) {
-      statusEl.style.color = '#4CAF50';
-      statusEl.textContent = 'Saved';
-      setTimeout(() => (statusEl.textContent = ''), 1500);
-    }
+    applyTheme(value);
+    setSaveStatus(statusEl, 'Saved', 'is-ok');
+    setTimeout(() => setSaveStatus(statusEl, '', null), 1500);
   } catch {
-    if (statusEl) {
-      statusEl.style.color = '#dc3545';
-      statusEl.textContent = 'Error';
-    }
+    setSaveStatus(statusEl, 'Error', 'is-error');
   }
 }
 
@@ -133,12 +139,13 @@ async function loadDatabaseInfo() {
       document.getElementById('spdx-version').textContent = info.spdxListVersion || 'Not available';
       
       const dbStatus = document.getElementById('db-status');
+      dbStatus.classList.remove('is-ok', 'is-error');
       if (info.isInitialized) {
         dbStatus.textContent = 'Initialized';
-        dbStatus.style.color = '#4CAF50';
+        dbStatus.classList.add('is-ok');
       } else {
         dbStatus.textContent = 'Not initialized';
-        dbStatus.style.color = '#dc3545';
+        dbStatus.classList.add('is-error');
       }
     }
   } catch (error) {
