@@ -3002,6 +3002,9 @@ function renderDiffHtml(diff) {
   const selectionWords = sameWords + addedWords;
   const totalWords = sameWords + addedWords + removedWords;
   const matchPct = totalWords ? (sameWords / totalWords) * 100 : 0;
+  // Asymmetric: how much of the reference license is present, ignoring any extra
+  // text the selection wraps around it.
+  const coveragePct = referenceWords ? (sameWords / referenceWords) * 100 : 0;
 
   // Long unchanged runs are split so the UI can fold the middle away.
   const CONTEXT_FOLD_MIN = 240;
@@ -3042,15 +3045,16 @@ function renderDiffHtml(diff) {
 
   const fmt = (n) => n.toLocaleString('en-US');
   // Chip colors double as the legend, so no separate legend row is emitted.
+  // Percentages live in the meta panel; these chips carry the raw counts.
   const summary =
     '<div class="ldiff-summary">' +
-      `<span class="ldiff-chip ldiff-chip-score" title="Identical words as a share of all words across both texts">${matchPct.toFixed(1)}% word overlap</span>` +
       `<span class="ldiff-chip ldiff-chip-same" title="Words present in both texts. Selection has ${fmt(selectionWords)} words, reference has ${fmt(referenceWords)}.">${fmt(sameWords)} unchanged</span>` +
       `<span class="ldiff-chip ldiff-chip-ins" title="Words only in the selected text">+${fmt(addedWords)} only in selection</span>` +
       `<span class="ldiff-chip ldiff-chip-del" title="Words only in the reference license">\u2212${fmt(removedWords)} only in reference</span>` +
     '</div>';
 
-  return '<div class="ldiff-wrap" data-ldiff-changes="' + changeIndex + '">' +
+  return '<div class="ldiff-wrap" data-ldiff-changes="' + changeIndex + '"' +
+    ` data-ldiff-coverage="${coveragePct.toFixed(1)}" data-ldiff-overlap="${matchPct.toFixed(1)}">` +
     summary +
     `<pre class="ldiff-output" tabindex="0">${body}</pre>` +
   '</div>';

@@ -517,6 +517,8 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
 
+    let metricsExpanded = false;
+
     function renderMetaPanel(match) {
       safeClearHTML(metaPanel);
       if (!match) {
@@ -524,7 +526,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
         return;
       }
 
-      const addChip = (label, value, className = '', description = '') => {
+      const addChip = (parent, label, value, className = '', description = '') => {
         if (!value) return;
         const chip = createEl('span');
         chip.className = `ldiff-metric${className ? ` ${className}` : ''}`;
@@ -537,7 +539,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
         val.textContent = value;
         chip.appendChild(key);
         chip.appendChild(val);
-        metaPanel.appendChild(chip);
+        parent.appendChild(chip);
       };
 
       if (match.templateMatch) {
@@ -549,10 +551,42 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       }
 
       const metrics = match.diffMetrics || {};
-      addChip('Score', prettyPercent(match.charSimilarity), 'ldiff-metric-primary');
-      addChip('Containment', prettyPercent(metrics.containment), '', 'How much of the shorter text\u2019s vocabulary appears in the longer one. High containment with low word overlap usually means the license is embedded in a much larger document.');
-      addChip('Cosine', prettyPercent(metrics.cosine), '', 'Similarity of the two texts\u2019 weighted word frequencies, ignoring word order');
-      addChip('Token Lev.', prettyPercent(metrics.tokenLevenshtein), '', 'How few word-level edits are needed to turn one text into the other');
+      // Read from the rendered diff so these stay in step with its word counts.
+      const wrap = diffContainer.querySelector?.('.ldiff-wrap') || null;
+      const coverage = wrap?.getAttribute('data-ldiff-coverage');
+      const overlap = wrap?.getAttribute('data-ldiff-overlap');
+
+      if (coverage) {
+        addChip(metaPanel, 'Coverage', `${coverage}%`, 'ldiff-metric-primary', 'How much of the reference license appears in your selection. 100% means the whole license is present, even if your selection also contains other text.');
+        addChip(metaPanel, 'Word overlap', `${overlap}%`, '', 'Identical words as a share of all words across both texts. Falls below coverage when your selection carries text beyond the license itself.');
+      } else {
+        addChip(metaPanel, 'Score', prettyPercent(match.charSimilarity), 'ldiff-metric-primary', 'Ranking score used to order matches');
+      }
+
+      const more = createEl('div');
+      more.className = 'ldiff-metric-more';
+      more.id = 'license-diff-metric-details';
+      addChip(more, 'Score', prettyPercent(match.charSimilarity), '', 'Ranking score used to order matches: 40% containment, 35% cosine, 25% token edit distance');
+      addChip(more, 'Containment', prettyPercent(metrics.containment), '', 'How much of the shorter text\u2019s vocabulary appears in the longer one. High containment with low word overlap usually means the license is embedded in a much larger document.');
+      addChip(more, 'Cosine', prettyPercent(metrics.cosine), '', 'Similarity of the two texts\u2019 weighted word frequencies, ignoring word order');
+      addChip(more, 'Token Lev.', prettyPercent(metrics.tokenLevenshtein), '', 'How few word-level edits are needed to turn one text into the other');
+
+      if (more.childNodes.length) {
+        const toggle = createEl('button');
+        toggle.type = 'button';
+        toggle.className = 'ldiff-metric-toggle';
+        toggle.setAttribute('aria-expanded', metricsExpanded ? 'true' : 'false');
+        toggle.setAttribute('aria-controls', 'license-diff-metric-details');
+        toggle.textContent = 'Details';
+        toggle.addEventListener('click', () => {
+          metricsExpanded = !metricsExpanded;
+          toggle.setAttribute('aria-expanded', metricsExpanded ? 'true' : 'false');
+          setDisplay(more, metricsExpanded ? 'flex' : 'none');
+        });
+        setDisplay(more, metricsExpanded ? 'flex' : 'none');
+        metaPanel.appendChild(toggle);
+        metaPanel.appendChild(more);
+      }
 
       setDisplay(metaPanel, metaPanel.childNodes.length ? 'flex' : 'none');
     }
@@ -899,11 +933,13 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
               }, { passive: false });
             }
 
-            renderMetaPanel(sel);
-
+            // The meta panel reads coverage off the rendered diff, so set it first.
             safeSetHTML(diffContainer, sel.diff !== null
               ? sel.diff
               : '<div class="ldiff-pending">Generating diff\u2026</div>');
+
+            renderMetaPanel(sel);
+
             refreshDiffTools();
             updateDiffSizing();
             setupCopyButtons();
@@ -935,6 +971,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
               safeSetHTML(diffContainer, match.diff !== null
                 ? match.diff
                 : '<div class="ldiff-pending">Generating diff\u2026</div>');
+              renderMetaPanel(match);
               refreshDiffTools();
               updateDiffSizing();
             }

@@ -808,6 +808,42 @@
   font-weight: 700;
 }
 
+#license-diff-ui .ldiff-metric-toggle {
+  order: 2;
+  margin: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  background-color: transparent;
+  color: #5f6771;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+#license-diff-ui .ldiff-metric-toggle:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+#license-diff-ui .ldiff-metric-toggle[aria-expanded="true"] {
+  background-color: rgba(0, 0, 0, 0.06);
+  border-color: rgba(0, 0, 0, 0.3);
+  font-weight: 700;
+}
+
+/* Full-width row so expanding never reflows the headline metrics. */
+#license-diff-meta .ldiff-metric-more {
+  order: 3;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
 /* ===== Diff toolbar ===== */
 #license-diff-diff-toolbar {
   display: flex;
@@ -861,6 +897,7 @@
 #license-diff-ui select:focus-visible,
 #license-diff-ui #license-diff-picker-button:focus-visible,
 #license-diff-ui .copy-spdx-button:focus-visible,
+#license-diff-ui .ldiff-metric-toggle:focus-visible,
 #license-diff-ui #license-diff-url a:focus-visible,
 #license-diff-ui .license-diff-close:focus-visible,
 #license-diff-display .ldiff-output:focus-visible {
@@ -900,11 +937,6 @@
   border: 1px solid rgba(0, 0, 0, 0.12);
   background-color: rgba(0, 0, 0, 0.03);
   font-variant-numeric: tabular-nums;
-}
-
-#license-diff-display .ldiff-chip-score {
-  background-color: rgba(37, 99, 235, 0.14);
-  border-color: rgba(37, 99, 235, 0.35);
 }
 
 #license-diff-display .ldiff-chip-ins {
@@ -977,11 +1009,25 @@
 #license-diff-ui.ld-theme-dark .ldiff-opt-group,
 #license-diff-ui.ld-theme-dark .ldiff-opt-sub,
 #license-diff-ui.ld-theme-dark .ldiff-metric-key,
+#license-diff-ui.ld-theme-dark .ldiff-metric-toggle,
 #license-diff-ui.ld-theme-dark .spdx-id,
 #license-diff-ui.ld-theme-dark .ldiff-nav-counter,
 #license-diff-ui.ld-theme-dark #license-diff-theme label,
 #license-diff-ui.ld-theme-dark #license-diff-result-grouping label {
   color: #a9b1ba !important;
+}
+
+#license-diff-ui.ld-theme-dark .ldiff-metric-toggle {
+  border-color: #3b3e46 !important;
+}
+
+#license-diff-ui.ld-theme-dark .ldiff-metric-toggle:hover,
+#license-diff-ui.ld-theme-dark .ldiff-metric-toggle[aria-expanded="true"] {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+#license-diff-ui.ld-theme-dark #license-diff-meta .ldiff-metric-more {
+  border-top-color: #3b3e46 !important;
 }
 
 #license-diff-ui.ld-theme-dark #license-diff-display .ldiff-chip {
@@ -995,12 +1041,6 @@
 }
 
 #license-diff-ui.ld-theme-dark .ldiff-metric.ldiff-metric-flag {
-  background-color: rgba(68, 147, 248, 0.22) !important;
-  border-color: rgba(68, 147, 248, 0.45) !important;
-  color: #cfe8ff !important;
-}
-
-#license-diff-ui.ld-theme-dark #license-diff-display .ldiff-chip-score {
   background-color: rgba(68, 147, 248, 0.22) !important;
   border-color: rgba(68, 147, 248, 0.45) !important;
   color: #cfe8ff !important;

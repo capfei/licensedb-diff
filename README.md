@@ -18,9 +18,24 @@ The extension is available at:
 
 To run the diff, select text on a web page and click on the extension icon. You will have the option
 to compare against licenses, exceptions or both. You can also select which source you want results from (SPDX, ScanCode or both) and to include/exclude deprecated licenses and exceptions. Once the comparisons have
-completed, it will return the top 10 results (this can be changed in the extension options). You can
-select each result from the dropdown to see the differences, click the link to go to the license text source and copy the license identifier by clicking
-on the copy button.
+completed, it will return the top 10 results (this can be changed in the extension options).
+
+Each result is listed with its identifier, match percentage and source. Selecting a result shows:
+
+- A link to the license text source and a copy button for the license identifier.
+- Coverage: how much of the reference license appears in your selection. 100% means the whole license is present, even if your selection also contains other text.
+- Word overlap: identical words as a share of all words across both texts. This sits below coverage when your selection carries text beyond the license itself.
+- A "Details" toggle revealing the ranking score and the measures behind it (containment, cosine, token Levenshtein). Results that match the license template exactly, ignoring variable fields, are flagged as a template match.
+- A word-level diff, with a summary of how many words are unchanged, how many appear only in your selection and how many appear only in the reference license.
+
+The diff view has a toolbar for working through the differences:
+
+- Next / previous change buttons, with a counter showing your position. The `n` and `p` keys do the same thing while the panel has focus.
+- "Only changes" collapses long unchanged passages so you only see what differs.
+- "Copy diff" copies the diff as plain text, with `[-removed-]` and `{+added+}` markers.
+- "Copy reference" copies the full reference license text.
+
+Press `Escape` while the panel has focus to close it.
 
 When using both sources, the results will be sorted by highest to lowest match score or you can select "Group by source"  in the "Results grouping" dropdown to group results by SPDX and ScanCode.
 
