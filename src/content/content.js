@@ -132,7 +132,9 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
 
     const closeButton = createEl('button');
     closeButton.className = 'license-diff-close';
-    closeButton.innerText = '×';
+    closeButton.innerText = '\u00d7';
+    closeButton.setAttribute('aria-label', 'Close license comparison');
+    closeButton.title = 'Close license comparison';
     closeButton.addEventListener('click', () => {
       setDisplay(uiContainer, 'none');
     });
@@ -140,14 +142,19 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
 
     const notificationsContainer = createEl('div');
     notificationsContainer.id = 'license-diff-notifications';
+    notificationsContainer.setAttribute('role', 'status');
+    notificationsContainer.setAttribute('aria-live', 'polite');
     uiContainer.appendChild(notificationsContainer);
 
     const status = createEl('div');
     status.id = 'license-diff-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
     uiContainer.appendChild(status);
 
     const progressBar = createEl('div');
     progressBar.id = 'license-diff-progress-container';
+    progressBar.setAttribute('aria-hidden', 'true');
     const progressEl = createEl('div');
     progressEl.id = 'license-diff-progress';
     progressBar.appendChild(progressEl);
@@ -190,7 +197,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     pickerButton.setAttribute('aria-controls', 'license-diff-picker-list');
     pickerButton.setAttribute('aria-label', 'Matched license');
 
-    const pickerList = createEl('ul');
+    const pickerList = createEl('div');
     pickerList.id = 'license-diff-picker-list';
     pickerList.setAttribute('role', 'listbox');
     pickerList.setAttribute('tabindex', '-1');
@@ -279,7 +286,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       const pct = prettyPercent(m.charSimilarity);
       const sourceLabel = m.sourceLabel || getSourceLabel(m.source);
 
-      const row = createEl('li');
+      const row = createEl('div');
       row.className = 'ldiff-opt';
       row.id = `license-diff-opt-${index}`;
       row.setAttribute('role', 'option');
@@ -354,12 +361,17 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
         ['licensedb', 'spdx'].forEach((sourceKey) => {
           const sourceItems = matches.filter(m => (m.source || 'licensedb') === sourceKey);
           if (!sourceItems.length) return;
-          const heading = createEl('li');
+          const label = getSourceLabel(sourceKey);
+          const group = createEl('div');
+          group.setAttribute('role', 'group');
+          group.setAttribute('aria-label', label);
+          const heading = createEl('div');
           heading.className = 'ldiff-opt-group';
-          heading.setAttribute('role', 'presentation');
-          heading.textContent = getSourceLabel(sourceKey);
-          pickerList.appendChild(heading);
-          sourceItems.forEach(appendRow);
+          heading.setAttribute('aria-hidden', 'true');
+          heading.textContent = label;
+          group.appendChild(heading);
+          sourceItems.forEach(m => group.appendChild(buildOptionRow(m, index++)));
+          pickerList.appendChild(group);
         });
       } else {
         matches.forEach(appendRow);
@@ -497,6 +509,14 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
     const getSourceClass = (source) => (source === 'spdx' ? 'source-spdx' : 'source-licensedb');
     const getSourceLabel = (source) => (source === 'spdx' ? 'SPDX' : 'ScanCode');
 
+    const escHtml = (value) => String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    const escAttr = (value) => escHtml(value)
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
     function renderMetaPanel(match) {
       safeClearHTML(metaPanel);
       if (!match) {
@@ -504,10 +524,11 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
         return;
       }
 
-      const addChip = (label, value, className = '') => {
+      const addChip = (label, value, className = '', description = '') => {
         if (!value) return;
         const chip = createEl('span');
         chip.className = `ldiff-metric${className ? ` ${className}` : ''}`;
+        if (description) chip.title = description;
         const key = createEl('span');
         key.className = 'ldiff-metric-key';
         key.textContent = label;
@@ -529,11 +550,9 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
 
       const metrics = match.diffMetrics || {};
       addChip('Score', prettyPercent(match.charSimilarity), 'ldiff-metric-primary');
-      addChip('Containment', prettyPercent(metrics.containment));
-      addChip('Cosine', prettyPercent(metrics.cosine));
-      addChip('Token Lev.', prettyPercent(metrics.tokenLevenshtein));
-      addChip('Avg', prettyPercent(metrics.avg));
-      addChip('Jaccard', prettyPercent(metrics.jaccard));
+      addChip('Containment', prettyPercent(metrics.containment), '', 'How much of the shorter text\u2019s vocabulary appears in the longer one. High containment with low word overlap usually means the license is embedded in a much larger document.');
+      addChip('Cosine', prettyPercent(metrics.cosine), '', 'Similarity of the two texts\u2019 weighted word frequencies, ignoring word order');
+      addChip('Token Lev.', prettyPercent(metrics.tokenLevenshtein), '', 'How few word-level edits are needed to turn one text into the other');
 
       setDisplay(metaPanel, metaPanel.childNodes.length ? 'flex' : 'none');
     }
@@ -667,12 +686,12 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
 
     document.addEventListener('keydown', (e) => {
       if ((uiContainer.style?.display || '') !== 'flex') return;
+      if (!uiContainer.contains?.(document.activeElement)) return;
       if (e.key === 'Escape') {
         setDisplay(uiContainer, 'none');
         return;
       }
       if (!changeAnchors.length) return;
-      if (!uiContainer.contains?.(document.activeElement)) return;
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); gotoChange(1); }
       else if (e.key === 'p' || e.key === 'P') { e.preventDefault(); gotoChange(-1); }
     });
@@ -689,7 +708,12 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
 
       if ((uiContainer.style?.display || '') !== 'flex') setDisplay(uiContainer, 'flex');
 
-      try { notification.scrollIntoView?.({ behavior: 'smooth', block: 'center' }); } catch { /* ignore */ }
+      try {
+        notification.scrollIntoView?.({
+          behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+          block: 'center'
+        });
+      } catch { /* ignore */ }
 
       setTimeout(() => {
         setStyleProp(notification, 'animation', 'fadeOut 0.3s ease-in-out');
@@ -846,12 +870,12 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
             const sourceLabel = getSourceLabel(m.source);
             m.sourceLabel = sourceLabel;
 
-            m.link = `<a href="${targetUrl}" target="_blank">${m.name}</a>
-              <span class="source-badge ${getSourceClass(m.source)}">${sourceLabel}</span>
+            m.link = `<a href="${escAttr(targetUrl)}" target="_blank">${escHtml(m.name)}</a>
+              <span class="source-badge ${getSourceClass(m.source)}">${escHtml(sourceLabel)}</span>
               ${m.deprecated ? '<span class="deprecated-badge">deprecated</span>' : ''}
               <span class="spdx-container">
-                <span class="spdx-id">(${m.spdx})</span>
-                <button class="copy-spdx-button" data-spdx="${m.spdx}" title="Copy ID">
+                <span class="spdx-id">(${escHtml(m.spdx)})</span>
+                <button class="copy-spdx-button" data-spdx="${escAttr(m.spdx)}" title="Copy identifier" aria-label="Copy identifier ${escAttr(m.spdx)}">
                   <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                 </button>
               </span>`;
