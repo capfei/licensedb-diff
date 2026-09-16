@@ -57,9 +57,27 @@ const dmp = new DiffMatchPatch();
 // In-memory cache of license term-frequency vectors (populated on demand)
 let licenseVectorsCache = null; // { license_key: { word: freq, ... } }
 
-// Track which tabs are currently running scans
-const activeScans = new Set();
+// Track which tabs are currently running scans: tabId -> { cancelled, traceId }
+const activeScans = new Map();
 let scanTraceCounter = 0;
+
+class ScanCancelledError extends Error {
+  constructor(traceId) {
+    super('Scan cancelled');
+    this.name = 'ScanCancelledError';
+    this.traceId = traceId;
+  }
+}
+
+function cancelScanForTab(tabId, reason = 'user closed panel') {
+  const controller = activeScans.get(tabId);
+  if (!controller) return false;
+  controller.cancelled = true;
+  // Free the slot now so a replacement scan can start before this one unwinds.
+  activeScans.delete(tabId);
+  console.info(`[LicenseMatch][${controller.traceId}] scan cancelled (${reason})`, { tabId });
+  return true;
+}
 
 function nextScanTrace(prefix = 'scan') {
   scanTraceCounter += 1;
@@ -1191,12 +1209,15 @@ async function loadScanEntryData(entry) {
  */
 async function fetchLicenses(text, sendProgress, options = {}) {
   const scanFilter = normalizeFilter(options.filter || currentScanFilter);
+  const throwIfCancelled = options.throwIfCancelled || (() => {});
   const originalSelected = text;
   // Ensure database initialized
   if (!(await isDatabaseInitialized())) {
     sendProgress({ checked: 0, total: 1, promising: 0, message: 'Initializing license database...' });
     await preloadLicenseDatabase();
   }
+
+  const prevTimeout = dmp.Diff_Timeout;
 
   try {
     // User settings
@@ -1281,6 +1302,7 @@ async function fetchLicenses(text, sendProgress, options = {}) {
 
     // approximate pass
     for (let i = 0; i < licenses.length; i += batchSize) {
+      throwIfCancelled();
       const batch = licenses.slice(i, i + batchSize);
       const batchResults = await Promise.all(batch.map(async (lic) => {
         try {
@@ -1448,7 +1470,6 @@ async function fetchLicenses(text, sendProgress, options = {}) {
     let effectiveDiffCap = Math.min(MAX_RESULTS * 2, dynamicMaxDiff, MAX_DIFF_CANDIDATES);
 
     // Prepare diff
-    const prevTimeout = dmp.Diff_Timeout;
     let baseDiffTimeout;
     if (selectedLength > CONFIG.scan.longText.length) baseDiffTimeout = 0.08;
     else if (selectedLength > CONFIG.scan.mediumText.length) baseDiffTimeout = 0.14;
@@ -1480,6 +1501,7 @@ async function fetchLicenses(text, sendProgress, options = {}) {
         message: `Refining 0/${cands.length}...`
       });
       for (let idx = 0; idx < cands.length; idx++) {
+        throwIfCancelled();
         if ((performance.now() - startDiffPhase) > DIFF_BUDGET_MS) {
           console.info('[LicenseMatch][Diff] Budget exceeded; stopping.');
           budgetExceeded = true;
@@ -1589,9 +1611,7 @@ async function fetchLicenses(text, sendProgress, options = {}) {
               diffMetrics: {
                 containment: containmentTokenPct.toFixed(2),
                 cosine: cosineTokenPct.toFixed(2),
-                tokenLevenshtein: tokenLevPct.toFixed(2),
-                avg: sims.avgPct.toFixed(2),
-                jaccard: sims.jaccardPct.toFixed(2)
+                tokenLevenshtein: tokenLevPct.toFixed(2)
               },
               score: finalScore.toFixed(2),
               link: (cand.source === SOURCES.SPDX)
@@ -1669,6 +1689,9 @@ async function fetchLicenses(text, sendProgress, options = {}) {
 
     return finalResults;
   } catch (err) {
+    // Bailing out mid-scan would otherwise leave the shared differ retuned.
+    dmp.Diff_Timeout = prevTimeout;
+    if (err instanceof ScanCancelledError) throw err;
     console.error('Error in fetchLicenses:', err);
     throw err;
   }
@@ -1699,8 +1722,11 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
     return;
   }
 
-  // Mark this tab as having an active scan
-  activeScans.add(tabId);
+  const controller = { cancelled: false, traceId };
+  activeScans.set(tabId, controller);
+  const throwIfCancelled = () => {
+    if (controller.cancelled) throw new ScanCancelledError(traceId);
+  };
 
   try {
     // Make sure content script is available
@@ -1733,7 +1759,12 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
     };
 
     // Fetch and compare licenses
-    const matches = await fetchLicenses(selectedText, sendProgress, { filter: normalizeFilter(scanFilter) });
+    const matches = await fetchLicenses(selectedText, sendProgress, {
+      filter: normalizeFilter(scanFilter),
+      throwIfCancelled
+    });
+
+    throwIfCancelled();
 
     if (matches && matches.length > 0) {
       matches.sort((a, b) => {
@@ -1754,6 +1785,7 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
 
       // Generate and stream display diffs one at a time
       for (const result of matches) {
+        throwIfCancelled();
         if (!result._licenseText) continue;
         const matchKey = `${result.source || 'licensedb'}:${result.license}`;
         let diff;
@@ -1782,25 +1814,42 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
       });
     }
   } catch (error) {
-    console.error(`[LicenseMatch][${traceId}] Error processing license check:`, error);
-    try {
-      await sendMessageToTab(tabId, {
-        action: 'showError',
-        error: error.message || 'An unknown error occurred'
-      });
-    } catch (err) {
-      console.error('Error showing error notification:', err);
+    if (error instanceof ScanCancelledError) {
+      console.info(`[LicenseMatch][${traceId}] scan stopped after cancellation`, { tabId });
+    } else {
+      console.error(`[LicenseMatch][${traceId}] Error processing license check:`, error);
+      try {
+        await sendMessageToTab(tabId, {
+          action: 'showError',
+          error: error.message || 'An unknown error occurred'
+        });
+      } catch (err) {
+        console.error('Error showing error notification:', err);
+      }
     }
   } finally {
     const durationMs = (performance.now() - startedAt).toFixed(1);
     console.info(`[LicenseMatch][${traceId}] processLicenseCheck end`, { tabId, durationMs });
-    // Remove this tab from active scans
-    activeScans.delete(tabId);
+    // A cancelled scan may unwind after a replacement scan has registered.
+    if (activeScans.get(tabId) === controller) activeScans.delete(tabId);
   }
 }
 
 // Message listener
 ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.action === 'cancelScan') {
+    const tabId = sender?.tab?.id;
+    if (tabId) {
+      sendResponse({ cancelled: cancelScanForTab(tabId) });
+    } else {
+      ext.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const activeId = tabs?.[0]?.id;
+        sendResponse({ cancelled: activeId ? cancelScanForTab(activeId) : false });
+      });
+      return true;
+    }
+    return false;
+  }
   if (message?.action === 'openExternal' && typeof message.url === 'string') {
     ext.tabs.create({ url: message.url }).then(() => {
       sendResponse({ ok: true });
@@ -1993,13 +2042,14 @@ async function getLicenseDbVersion(force = false) {
   try {
     if (!force) {
       const cached = await getCachedLicenseDbVersion();
-      if (cached && cached.timestamp) {
+      // A cached fingerprint means the footer parse failed last time; retry it.
+      if (cached && cached.timestamp && !String(cached.version || '').startsWith('idx-')) {
         const ageMs = Date.now() - new Date(cached.timestamp).getTime();
         if (ageMs < 24 * 60 * 60 * 1000) return cached.version || null; // cache < 1 day
       }
     }
     // Preferred: parse the user-facing footer text from index.html,
-    // e.g. "Generated with ScanCode toolkit 32.5.0 on 2026-01-22."
+    // e.g. "Generated with ScanCode toolkit 33.0.0rc1 on 2026-09-14."
     try {
       const htmlResp = await fetch(SCAN_ENDPOINTS.scancodeIndexHtml, { cache: 'no-cache' });
       if (htmlResp.ok) {
@@ -2007,7 +2057,8 @@ async function getLicenseDbVersion(force = false) {
         // Strip HTML tags and collapse whitespace before matching, so inline
         // elements (e.g. <a>, <b>) around the version or date don't break the regex
         const plainText = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-        const match = plainText.match(/Generated\s+with\s+ScanCode\s+toolkit\s+([0-9]+(?:\.[0-9]+)*)\s+on\s+(\d{4}-\d{2}-\d{2})/i);
+        // Version starts with a digit and may carry a pre-release suffix (33.0.0rc1).
+        const match = plainText.match(/Generated\s+with\s+ScanCode\s+toolkit\s+([0-9][^\s]*?)\s+on\s+(\d{4}-\d{2}-\d{2})/i);
         if (match) {
           const toolkitVersion = match[1];
           const generatedDate = match[2];
@@ -2371,6 +2422,15 @@ ext.action.onClicked.addListener(async (tab) => {
   await handleActionClick(tab, currentScanFilter, traceId);
 });
 
+// A closed or navigated tab has no panel left to receive results.
+ext.tabs.onRemoved.addListener((tabId) => {
+  cancelScanForTab(tabId, 'tab closed');
+});
+
+ext.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === 'loading') cancelScanForTab(tabId, 'tab navigated');
+});
+
 async function initiateScanForActiveTab(filterChoice, traceId = nextScanTrace('start')) {
   try {
     console.info(`[LicenseMatch][${traceId}] resolving active tab`, { filter: filterChoice });
@@ -2534,10 +2594,15 @@ function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
     return sims.containmentPct >= 3 || sims.avgPct >= 3;
   };
 
+  // Rewards matched text while penalising fragmentation: char-level diffs can
+  // match more raw characters than word-level ones yet read as unusable noise.
   const evaluateDiffQuality = (diff) => {
     if (!Array.isArray(diff) || !diff.length) return -Infinity;
     let equalChars = 0;
-    let replacementPairs = 0;
+    let editChars = 0;
+    let editChunks = 0;
+    let noiseEqualities = 0;
+    let brokenWordEdits = 0;
     let largeReplacementPairs = 0;
 
     const toTuple = (entry) => {
@@ -2552,11 +2617,28 @@ function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
       return null;
     };
 
+    const isWordChar = (ch) => !!ch && /[A-Za-z0-9]/.test(ch);
+
     for (let i = 0; i < diff.length; i++) {
       const current = toTuple(diff[i]);
       if (!current) continue;
       const [op, data] = current;
-      if (op === 0) equalChars += data.length;
+
+      if (op === 0) {
+        equalChars += data.length;
+        const trimmed = data.trim();
+        if (i > 0 && i < diff.length - 1 && trimmed.length > 0 && trimmed.length <= 3) noiseEqualities++;
+      } else {
+        editChars += data.length;
+        editChunks++;
+        const prev = toTuple(diff[i - 1]);
+        const next = toTuple(diff[i + 1]);
+        const prevChar = prev && prev[0] === 0 ? prev[1].slice(-1) : '';
+        const nextChar = next && next[0] === 0 ? next[1].charAt(0) : '';
+        // An edit that starts/ends mid-word is a sub-word split (e.g. "Lic|ence").
+        if (isWordChar(prevChar) && isWordChar(data.charAt(0))) brokenWordEdits++;
+        if (isWordChar(nextChar) && isWordChar(data.slice(-1))) brokenWordEdits++;
+      }
 
       const next = toTuple(diff[i + 1]);
       if (!next) continue;
@@ -2565,40 +2647,37 @@ function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
         (op === -1 && nextOp === 1) ||
         (op === 1 && nextOp === -1);
       if (!isReplacement) continue;
-      replacementPairs++;
-      if ((data.length + nextData.length) > 300) largeReplacementPairs++;
+      if ((data.length + nextData.length) > 800) largeReplacementPairs++;
     }
 
-    return equalChars - (replacementPairs * 120) - (largeReplacementPairs * 280);
+    return equalChars
+      - (editChars * 0.25)
+      - (editChunks * 20)
+      - (noiseEqualities * 60)
+      - (brokenWordEdits * 80)
+      - (largeReplacementPairs * 200);
   };
 
   const attemptDiff = () => {
-    // For long texts, line-level diffs via diff_linesToChars_ reduce text
-    // to ~500 chars, so timeout=0 is safe. If line-level produces degenerate
-    // results (mismatched line wrapping), fall back to char-level on
-    // paragraph-normalized text with bounded timeout.
+    // Word mode is tried first: it collapses each text to one code unit per
+    // token, so it is both fast and aligned to word boundaries the way online
+    // diff tools behave. Line/char modes remain as fallbacks.
     const isLongText = (paraA.length > 15000 || paraB.length > 15000);
     const timeouts = isLongText
       ? [1, 3, 0]
       : [Math.max(originalTimeout || 0, 1), 4, 0];
-    const attempts = isLongText
-      ? [
-          { a: paraA, b: paraB, mode: 'lines' },
-          { a: displayA, b: displayB, mode: 'lines' },
-          { a: canonA, b: canonB, mode: 'lines' },
-          { a: paraA, b: paraB, mode: 'chars' },
-        ]
-      : [
-          { a: paraA, b: paraB, mode: 'chars' },
-          { a: paraA, b: paraB, mode: 'lines' },
-          { a: displayA, b: displayB, mode: 'chars' },
-          { a: displayA, b: displayB, mode: 'lines' },
-          { a: canonA, b: canonB, mode: 'chars' },
-          { a: canonA, b: canonB, mode: 'lines' }
-        ];
+    const attempts = [
+      { a: paraA, b: paraB, mode: 'words' },
+      { a: displayA, b: displayB, mode: 'words' },
+      { a: canonA, b: canonB, mode: 'words' },
+      { a: paraA, b: paraB, mode: 'lines' },
+      { a: displayA, b: displayB, mode: 'lines' },
+      { a: canonA, b: canonB, mode: 'lines' },
+      { a: paraA, b: paraB, mode: 'chars' },
+      { a: displayA, b: displayB, mode: 'chars' },
+      { a: canonA, b: canonB, mode: 'chars' }
+    ];
 
-    let best = null;
-    let bestScore = -Infinity;
     let fallback = null;
     let fallbackScore = -Infinity;
 
@@ -2607,6 +2686,10 @@ function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
         console.warn(`[LicenseMatch][DisplayDiff] Wall-clock cap (${maxMs}ms) reached; stopping attempts early`);
         break;
       }
+
+      let best = null;
+      let bestScore = -Infinity;
+
       for (const timeout of timeouts) {
         // For long-text char-level, cap timeout at 3s to prevent runaway diff
         const effectiveTimeout = (isLongText && mode === 'chars')
@@ -2616,20 +2699,15 @@ function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
           const diff = runDisplayDiff(a, b, effectiveTimeout, mode);
           const degenerate = isDegenerate(diff, a.length, b.length);
           const hasEq = hasEqual(diff);
-          const meaningful = !degenerate && hasEq && hasMeaningfulOverlap(diff, a.length, b.length);
-
-          // Track best fallback (only requires some equal text)
-          if (!degenerate && hasEq) {
-            const score = evaluateDiffQuality(diff);
-            if (score > fallbackScore) {
-              fallback = diff;
-              fallbackScore = score;
-            }
-          }
-
-          if (!meaningful) continue;
+          if (degenerate || !hasEq) continue;
 
           const score = evaluateDiffQuality(diff);
+          if (score > fallbackScore) {
+            fallback = diff;
+            fallbackScore = score;
+          }
+
+          if (!hasMeaningfulOverlap(diff, a.length, b.length)) continue;
           if (score > bestScore) {
             best = diff;
             bestScore = score;
@@ -2638,19 +2716,22 @@ function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
           console.warn(`[LicenseMatch][DisplayDiff] mode=${mode} timeout=${timeout} failed`, err);
         }
       }
+
+      // Prefer the highest-priority mode that produced a usable diff instead of
+      // letting char-level noise outscore a clean word-level result.
+      if (best) return best;
     }
 
-    if (best) return best;
     if (fallback) {
       console.info('[LicenseMatch][DisplayDiff] Using fallback diff (did not pass strict quality checks)');
       return fallback;
     }
 
-    // Last resort: simple line-level diff with no quality gates
+    // Last resort: simple word-level diff with no quality gates
     try {
-      const lastResort = runDisplayDiff(paraA, paraB, 0, 'lines');
+      const lastResort = runDisplayDiff(paraA, paraB, 0, 'words');
       if (hasEqual(lastResort)) {
-        console.info('[LicenseMatch][DisplayDiff] Using last-resort line diff');
+        console.info('[LicenseMatch][DisplayDiff] Using last-resort word diff');
         return lastResort;
       }
     } catch { /* ignore */ }
@@ -2675,9 +2756,24 @@ function generateStableDisplayDiff(licenseText, selectionText, maxMs = 5000) {
 
 function runDisplayDiff(a, b, timeout, mode = 'lines') {
   const previous = dmp.Diff_Timeout;
+  const previousEditCost = dmp.Diff_EditCost;
   try {
     dmp.Diff_Timeout = timeout;
     let diff;
+    if (mode === 'words') {
+      const { chars1, chars2, tokenArray } = diffWordsToChars(a, b);
+      diff = dmp.diff_main(chars1, chars2, false);
+      // Clean up while still token-encoded so boundaries stay on whole words.
+      dmp.diff_cleanupSemantic(diff);
+      // Edit cost is counted in tokens here, so keep it low.
+      dmp.Diff_EditCost = 2;
+      dmp.diff_cleanupEfficiency(diff);
+      diffCharsToWords(diff, tokenArray);
+      diff = mergeAdjacentDiffs(diff);
+      diff = hoistSharedWhitespaceAffixes(diff);
+      diff = collapseWhitespaceOnlyReplacements(diff);
+      return mergeAdjacentDiffs(diff);
+    }
     if (mode === 'lines') {
       const { chars1, chars2, lineArray } = dmp.diff_linesToChars_(a, b);
       diff = dmp.diff_main(chars1, chars2, false);
@@ -2687,11 +2783,204 @@ function runDisplayDiff(a, b, timeout, mode = 'lines') {
     }
     dmp.diff_cleanupSemantic(diff);
     dmp.diff_cleanupEfficiency(diff);
+    diff = snapDiffToWordBoundaries(diff);
+    diff = hoistSharedWhitespaceAffixes(diff);
     diff = collapseWhitespaceOnlyReplacements(diff);
-    return diff;
+    return mergeAdjacentDiffs(diff);
   } finally {
     dmp.Diff_Timeout = previous;
+    dmp.Diff_EditCost = previousEditCost;
   }
+}
+
+// Words, whitespace runs and standalone punctuation are each one token.
+const DIFF_WORD_TOKEN_RE = /[A-Za-z0-9]+(?:['\u2019_-][A-Za-z0-9]+)*|\s+|[^\sA-Za-z0-9]/g;
+const DIFF_WORD_TOKEN_LIMIT = 60000;
+
+function tokenizeForWordDiff(text) {
+  return String(text ?? '').match(DIFF_WORD_TOKEN_RE) || [];
+}
+
+function diffWordsToChars(text1, text2) {
+  const tokenArray = [];
+  const tokenHash = Object.create(null);
+
+  const encode = (text) => {
+    const tokens = tokenizeForWordDiff(text);
+    const codes = [];
+    for (const token of tokens) {
+      const existing = tokenHash[token];
+      if (existing !== undefined) {
+        codes.push(existing);
+        continue;
+      }
+      if (tokenArray.length >= DIFF_WORD_TOKEN_LIMIT) {
+        throw new Error('Word diff token limit exceeded');
+      }
+      const index = tokenArray.length;
+      tokenArray.push(token);
+      tokenHash[token] = index;
+      codes.push(index);
+    }
+    let out = '';
+    for (let i = 0; i < codes.length; i += 4096) {
+      out += String.fromCharCode.apply(null, codes.slice(i, i + 4096));
+    }
+    return out;
+  };
+
+  const chars1 = encode(text1);
+  const chars2 = encode(text2);
+  return { chars1, chars2, tokenArray };
+}
+
+function diffCharsToWords(diffs, tokenArray) {
+  for (let i = 0; i < diffs.length; i++) {
+    const chars = String(diffs[i][1] ?? '');
+    let text = '';
+    for (let j = 0; j < chars.length; j++) {
+      text += tokenArray[chars.charCodeAt(j)];
+    }
+    diffs[i][1] = text;
+  }
+}
+
+function normalizeDiffEntry(entry) {
+  if (!entry) return null;
+  if (Array.isArray(entry)) return { op: entry[0], data: String(entry[1] ?? '') };
+  if (typeof entry === 'object') {
+    const op = entry.op ?? entry.operation ?? entry.type ?? entry[0];
+    const data = entry.text ?? entry.data ?? entry[1];
+    if (op === undefined) return null;
+    return { op, data: String(data ?? '') };
+  }
+  return null;
+}
+
+function mergeAdjacentDiffs(diff) {
+  if (!Array.isArray(diff)) return diff;
+  const out = [];
+  for (const entry of diff) {
+    const normalized = normalizeDiffEntry(entry);
+    if (!normalized || normalized.data === '') continue;
+    const last = out[out.length - 1];
+    if (last && last[0] === normalized.op) {
+      last[1] += normalized.data;
+      continue;
+    }
+    out.push([normalized.op, normalized.data]);
+  }
+  return out;
+}
+
+// Moves whitespace shared by a delete/insert pair out of the highlight so the
+// markers sit on the changed words rather than on the surrounding spacing.
+function hoistSharedWhitespaceAffixes(diff) {
+  if (!Array.isArray(diff) || diff.length < 2) return diff;
+  const entries = diff.map(normalizeDiffEntry).filter(Boolean).map(({ op, data }) => [op, data]);
+  const out = [];
+
+  for (let i = 0; i < entries.length; i++) {
+    const [op, data] = entries[i];
+    const next = entries[i + 1];
+    const isPair = next && ((op === -1 && next[0] === 1) || (op === 1 && next[0] === -1));
+    if (!isPair) {
+      out.push([op, data]);
+      continue;
+    }
+
+    let a = data;
+    let b = next[1];
+    const leadA = (a.match(/^\s+/) || [''])[0];
+    const leadB = (b.match(/^\s+/) || [''])[0];
+    let lead = '';
+    if (leadA && leadB) {
+      lead = leadA.length <= leadB.length ? leadA : leadB;
+      a = a.slice(lead.length);
+      b = b.slice(lead.length);
+    }
+
+    const tailA = (a.match(/\s+$/) || [''])[0];
+    const tailB = (b.match(/\s+$/) || [''])[0];
+    let tail = '';
+    if (tailA && tailB) {
+      tail = tailA.length <= tailB.length ? tailA : tailB;
+      a = a.slice(0, a.length - tail.length);
+      b = b.slice(0, b.length - tail.length);
+    }
+
+    if (!a && !b) {
+      out.push([0, lead + tail]);
+      i++;
+      continue;
+    }
+
+    if (lead) out.push([0, lead]);
+    out.push([op, a]);
+    out.push([next[0], b]);
+    if (tail) out.push([0, tail]);
+    i++;
+  }
+
+  return out.filter(([, text]) => text !== '');
+}
+
+// Expands char-level edits outward so they never start or end mid-word.
+function snapDiffToWordBoundaries(diff) {
+  if (!Array.isArray(diff) || diff.length < 2) return diff;
+  const entries = diff.map(normalizeDiffEntry).filter(Boolean).map(({ op, data }) => [op, data]);
+  const isWordChar = (ch) => !!ch && /[A-Za-z0-9]/.test(ch);
+
+  // A fragment may only be pushed into an edit run that has both a delete and
+  // an insert; otherwise one of the two source texts would be altered.
+  const runIsBalanced = (start, step) => {
+    let hasDelete = false;
+    let hasInsert = false;
+    for (let j = start; j >= 0 && j < entries.length; j += step) {
+      const op = entries[j][0];
+      if (op === 0) break;
+      if (op === -1) hasDelete = true;
+      if (op === 1) hasInsert = true;
+    }
+    return hasDelete && hasInsert;
+  };
+
+  for (let i = 0; i < entries.length; i++) {
+    const [op, data] = entries[i];
+    if (op !== 0 || !data) continue;
+
+    const prevOps = runIsBalanced(i - 1, -1);
+    const nextOps = runIsBalanced(i + 1, 1);
+
+    // Trailing partial word of an equality that is followed by an edit.
+    if (nextOps && isWordChar(data.slice(-1))) {
+      const match = data.match(/[A-Za-z0-9]+(?:['\u2019_-][A-Za-z0-9]+)*$/);
+      const fragment = match ? match[0] : '';
+      if (fragment && fragment.length < data.length) {
+        entries[i][1] = data.slice(0, data.length - fragment.length);
+        for (let j = i + 1; j < entries.length; j++) {
+          if (entries[j][0] === 0) break;
+          entries[j][1] = fragment + entries[j][1];
+        }
+      }
+    }
+
+    const current = entries[i][1];
+    // Leading partial word of an equality that is preceded by an edit.
+    if (prevOps && current && isWordChar(current.charAt(0))) {
+      const match = current.match(/^[A-Za-z0-9]+(?:['\u2019_-][A-Za-z0-9]+)*/);
+      const fragment = match ? match[0] : '';
+      if (fragment && fragment.length < current.length) {
+        entries[i][1] = current.slice(fragment.length);
+        for (let j = i - 1; j >= 0; j--) {
+          if (entries[j][0] === 0) break;
+          entries[j][1] = entries[j][1] + fragment;
+        }
+      }
+    }
+  }
+
+  return entries.filter(([, text]) => text !== '');
 }
 
 function collapseWhitespaceOnlyReplacements(diff) {
@@ -2760,15 +3049,75 @@ function renderDiffHtml(diff) {
     .replace(/>/g, '&gt;')
     .replace(/\t/g, '    ');
 
-  const formatDiffText = (text) => escapeHtmlFragment(text);
+  const countWords = (text) => (String(text).match(/[A-Za-z0-9]+(?:['\u2019_-][A-Za-z0-9]+)*/g) || []).length;
 
-  const renderBody = (op, chunk) => {
-    const formatted = formatDiffText(chunk ?? '');
-    if (op === 1) return `<ins>${formatted}</ins>`;
-    if (op === -1) return `<del>${formatted}</del>`;
-    return `<span>${formatted}</span>`;
+  let sameWords = 0;
+  let addedWords = 0;
+  let removedWords = 0;
+  for (const [op, data] of sanitized) {
+    if (op === 0) sameWords += countWords(data);
+    else if (op === 1) addedWords += countWords(data);
+    else removedWords += countWords(data);
+  }
+
+  const referenceWords = sameWords + removedWords;
+  const selectionWords = sameWords + addedWords;
+  const totalWords = sameWords + addedWords + removedWords;
+  const matchPct = totalWords ? (sameWords / totalWords) * 100 : 0;
+  // Asymmetric: how much of the reference license is present, ignoring any extra
+  // text the selection wraps around it.
+  const coveragePct = referenceWords ? (sameWords / referenceWords) * 100 : 0;
+
+  // Long unchanged runs are split so the UI can fold the middle away.
+  const CONTEXT_FOLD_MIN = 240;
+  const CONTEXT_KEEP = 110;
+
+  const renderEqual = (chunk) => {
+    if (chunk.length < CONTEXT_FOLD_MIN) {
+      return `<span class="ldiff-equal">${escapeHtmlFragment(chunk)}</span>`;
+    }
+    const head = chunk.slice(0, CONTEXT_KEEP);
+    const mid = chunk.slice(CONTEXT_KEEP, chunk.length - CONTEXT_KEEP);
+    const tail = chunk.slice(chunk.length - CONTEXT_KEEP);
+    const foldedWords = countWords(mid);
+    return '<span class="ldiff-equal">' +
+      `<span class="ldiff-ctx-edge">${escapeHtmlFragment(head)}</span>` +
+      `<span class="ldiff-ctx-fold" aria-hidden="true"> \u2026 ${foldedWords} unchanged words \u2026 </span>` +
+      `<span class="ldiff-ctx-mid">${escapeHtmlFragment(mid)}</span>` +
+      `<span class="ldiff-ctx-edge">${escapeHtmlFragment(tail)}</span>` +
+      '</span>';
   };
 
-  const html = sanitized.map(([op, data]) => renderBody(op, data)).join('');
-  return `<pre class="ldiff-output">${html}</pre>`;
+  let changeIndex = 0;
+  let inChangeRun = false;
+  const body = sanitized.map(([op, data]) => {
+    if (op === 0) {
+      inChangeRun = false;
+      return renderEqual(data);
+    }
+    // A delete immediately followed by an insert counts as one navigable change.
+    if (!inChangeRun) {
+      changeIndex++;
+      inChangeRun = true;
+    }
+    const tag = op === 1 ? 'ins' : 'del';
+    const label = op === 1 ? 'in selection only' : 'in reference only';
+    return `<${tag} class="ldiff-change" data-ldiff-change="${changeIndex}" title="${label}">${escapeHtmlFragment(data)}</${tag}>`;
+  }).join('');
+
+  const fmt = (n) => n.toLocaleString('en-US');
+  // Chip colors double as the legend, so no separate legend row is emitted.
+  // Percentages live in the meta panel; these chips carry the raw counts.
+  const summary =
+    '<div class="ldiff-summary">' +
+      `<span class="ldiff-chip ldiff-chip-same" title="Words present in both texts. Selection has ${fmt(selectionWords)} words, reference has ${fmt(referenceWords)}.">${fmt(sameWords)} unchanged</span>` +
+      `<span class="ldiff-chip ldiff-chip-ins" title="Words only in the selected text">+${fmt(addedWords)} only in selection</span>` +
+      `<span class="ldiff-chip ldiff-chip-del" title="Words only in the reference license">\u2212${fmt(removedWords)} only in reference</span>` +
+    '</div>';
+
+  return '<div class="ldiff-wrap" data-ldiff-changes="' + changeIndex + '"' +
+    ` data-ldiff-coverage="${coveragePct.toFixed(1)}" data-ldiff-overlap="${matchPct.toFixed(1)}">` +
+    summary +
+    `<pre class="ldiff-output" tabindex="0">${body}</pre>` +
+  '</div>';
 }

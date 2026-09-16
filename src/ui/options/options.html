@@ -6,53 +6,66 @@
   <title>LicenseDB Diff Options</title>
   <style>
     body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 13px;
       max-width: 800px;
       margin: 0 auto;
       padding: 20px;
-      color: #333;
+      background-color: #ffffff;
+      color: #333333;
       line-height: 1.6;
+      accent-color: #2e7d32;
     }
 
     h1 {
-      color: #4CAF50;
+      font-size: 20px;
+      color: #1b7a2f;
       border-bottom: 1px solid #eee;
-      padding-bottom: 10px;
+      padding-bottom: 12px;
       margin-bottom: 20px;
     }
 
     .card {
       background-color: #fff;
       border-radius: 8px;
-      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-      padding: 20px;
-      margin-bottom: 20px;
+      border: 1px solid rgba(0, 0, 0, 0.1);
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+      padding: 16px;
+      margin-bottom: 16px;
     }
 
     .card h2 {
       margin-top: 0;
-      font-size: 18px;
+      margin-bottom: 12px;
+      font-size: 15px;
       font-weight: 600;
       color: #333;
     }
 
+    .card p {
+      margin: 0 0 12px;
+    }
+
     button {
-      background-color: #4CAF50;
-      color: #000000;
+      background-color: #2e7d32;
+      color: #ffffff;
       border: none;
-      border-radius: 4px;
-      padding: 10px 16px;
-      font-size: 14px;
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
       cursor: pointer;
       transition: background-color 0.3s;
     }
 
     button:hover {
-      background-color: #3d8b3d;
+      background-color: #1b5e20;
     }
 
     button:disabled {
       background-color: #cccccc;
+      color: #333333;
       cursor: not-allowed;
     }
 
@@ -67,28 +80,70 @@
 
     .button-danger {
       background-color: #dc3545;
-      color: white;
+      color: #ffffff;
     }
 
     .button-danger:hover {
       background-color: #c82333;
     }
 
+    input[type="number"],
+    select {
+      padding: 6px 8px;
+      border-radius: 8px;
+      border: 1px solid rgba(0, 0, 0, 0.15);
+      background-color: #ffffff;
+      color: #333333;
+      font-family: inherit;
+      font-size: 13px;
+    }
+
+    :focus-visible {
+      outline: 2px solid #2563eb;
+      outline-offset: 2px;
+    }
+
     .info-box {
       background-color: #f8f9fa;
       border-left: 4px solid #17a2b8;
       padding: 12px;
-      margin: 15px 0;
+      margin: 12px 0;
+    }
+
+    .info-box p {
+      margin: 0;
     }
 
     .status-container {
-      margin-top: 15px;
-      font-size: 14px;
-      color: #666;
+      margin-top: 12px;
+      font-size: 13px;
+      color: #5f6771;
+    }
+
+    .save-status {
+      margin-left: 10px;
+      font-size: 12px;
+      color: #5f6771;
+    }
+
+    .save-status.is-ok {
+      color: #1b7a2f;
+    }
+
+    .save-status.is-error {
+      color: #b3261e;
+    }
+
+    #db-status.is-ok {
+      color: #1b7a2f;
+    }
+
+    #db-status.is-error {
+      color: #b3261e;
     }
 
     .code {
-      font-family: monospace;
+      font-family: inherit;
       background-color: #f0f0f0;
       padding: 2px 4px;
       border-radius: 3px;
@@ -97,6 +152,7 @@
     .status-item {
       display: flex;
       justify-content: space-between;
+      gap: 12px;
       padding: 8px 0;
       border-bottom: 1px solid #eee;
     }
@@ -107,6 +163,7 @@
 
     .status-label {
       font-weight: 500;
+      color: #333333;
     }
 
     .progress-container {
@@ -115,13 +172,13 @@
       background-color: #f0f0f0;
       border-radius: 5px;
       overflow: hidden;
-      margin: 10px 0;
+      margin: 12px 0;
     }
 
     .progress-bar {
       height: 100%;
       width: 0%;
-      background-color: #4CAF50;
+      background-color: #2e7d32;
       border-radius: 5px;
       transition: width 0.3s ease;
     }
@@ -130,55 +187,124 @@
       display: none;
     }
 
-    @media (prefers-color-scheme: dark) {
-      body {
-        background-color: #2d2d2d;
-        color: #e0e0e0;
-      }
+    .settings-grid {
+      display: grid;
+      gap: 12px;
+      max-width: 420px;
+    }
 
-      .card {
-        background-color: #383838;
-        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
-      }
+    .settings-grid input[type="number"] {
+      width: 120px;
+      margin-left: 8px;
+    }
 
-      .card h2 {
-        color: #e0e0e0;
-      }
+    .field-inline {
+      margin-left: 8px;
+    }
 
-      h1 {
-        color: #6abf69;
-        border-bottom-color: #444;
-      }
+    .form-actions {
+      margin-top: 12px;
+    }
 
-      .button-secondary {
-        background-color: #555;
-        color: #e0e0e0;
-      }
+    body.theme-dark {
+      background-color: #0d1117;
+      color: #f0f6fc;
+      accent-color: #3fb950;
+    }
 
-      .button-secondary:hover {
-        background-color: #666;
-      }
+    body.theme-dark .card {
+      background-color: #161b22;
+      border-color: #3b3e46;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+    }
 
-      .info-box {
-        background-color: #383838;
-        border-left-color: #17a2b8;
-      }
+    body.theme-dark .card h2,
+    body.theme-dark .status-label {
+      color: #f0f6fc;
+    }
 
-      .status-container {
-        color: #bbb;
-      }
+    body.theme-dark h1 {
+      color: #aff5b4;
+      border-bottom-color: #3b3e46;
+    }
 
-      .code {
-        background-color: #444;
-        color: #e0e0e0;
-      }
+    body.theme-dark button {
+      background-color: #238636;
+      color: #ffffff;
+    }
 
-      .status-item {
-        border-bottom-color: #444;
-      }
+    body.theme-dark button:hover {
+      background-color: #2ea043;
+    }
 
-      .progress-container {
-        background-color: #444;
+    body.theme-dark button:disabled {
+      background-color: #3b3e46;
+      color: #a9b1ba;
+    }
+
+    body.theme-dark .button-secondary {
+      background-color: #30363d;
+      color: #f0f6fc;
+    }
+
+    body.theme-dark .button-secondary:hover {
+      background-color: #3b4149;
+    }
+
+    body.theme-dark input[type="number"],
+    body.theme-dark select {
+      background-color: #0d1117;
+      color: #f0f6fc;
+      border-color: #3b3e46;
+    }
+
+    body.theme-dark :focus-visible {
+      outline-color: #79b8ff;
+    }
+
+    body.theme-dark .info-box {
+      background-color: rgba(255, 255, 255, 0.04);
+      border-left-color: #17a2b8;
+    }
+
+    body.theme-dark .status-container,
+    body.theme-dark .save-status {
+      color: #a9b1ba;
+    }
+
+    body.theme-dark .save-status.is-ok {
+      color: #aff5b4;
+    }
+
+    body.theme-dark .save-status.is-error {
+      color: #ff938a;
+    }
+
+    body.theme-dark #db-status.is-ok {
+      color: #aff5b4;
+    }
+
+    body.theme-dark #db-status.is-error {
+      color: #ff938a;
+    }
+
+    body.theme-dark .code {
+      background-color: #30363d;
+      color: #f0f6fc;
+    }
+
+    body.theme-dark .status-item {
+      border-bottom-color: #3b3e46;
+    }
+
+    body.theme-dark .progress-container {
+      background-color: #30363d;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      button,
+      .progress-bar {
+        transition: none;
       }
     }
   </style>
@@ -229,18 +355,18 @@
 
   <div class="card">
     <h2>Results Settings</h2>
-    <div style="display:grid; gap:12px; max-width:420px;">
+    <div class="settings-grid">
       <label>
         Maximum results to show
-        <input id="max-results" type="number" min="1" max="100" step="1" style="width:120px; margin-left:8px;" />
+        <input id="max-results" type="number" min="1" max="100" step="1" />
       </label>
       <label>
         Minimum match percentage
-        <input id="min-similarity" type="number" min="0" max="100" step="1" style="width:120px; margin-left:8px;" />
+        <input id="min-similarity" type="number" min="0" max="100" step="1" />
       </label>
       <div>
         <button id="save-settings">Save Settings</button>
-        <span id="save-status" style="margin-left:10px; font-size:12px; color:#666666;"></span>
+        <span id="save-status" class="save-status"></span>
       </div>
     </div>
   </div>
@@ -255,14 +381,14 @@
     <h2>Appearance</h2>
     <label>
       Theme
-      <select id="theme-select" style="margin-left:8px;">
+      <select id="theme-select" class="field-inline">
         <option value="light">Light</option>
         <option value="dark">Dark</option>
       </select>
     </label>
-    <div style="margin-top:10px;">
+    <div class="form-actions">
       <button id="save-theme">Save Theme</button>
-      <span id="theme-save-status" style="margin-left:10px; font-size:12px; color:#666666;"></span>
+      <span id="theme-save-status" class="save-status"></span>
     </div>
   </div>
 
