@@ -57,9 +57,27 @@ const dmp = new DiffMatchPatch();
 // In-memory cache of license term-frequency vectors (populated on demand)
 let licenseVectorsCache = null; // { license_key: { word: freq, ... } }
 
-// Track which tabs are currently running scans
-const activeScans = new Set();
+// Track which tabs are currently running scans: tabId -> { cancelled, traceId }
+const activeScans = new Map();
 let scanTraceCounter = 0;
+
+class ScanCancelledError extends Error {
+  constructor(traceId) {
+    super('Scan cancelled');
+    this.name = 'ScanCancelledError';
+    this.traceId = traceId;
+  }
+}
+
+function cancelScanForTab(tabId, reason = 'user closed panel') {
+  const controller = activeScans.get(tabId);
+  if (!controller) return false;
+  controller.cancelled = true;
+  // Free the slot now so a replacement scan can start before this one unwinds.
+  activeScans.delete(tabId);
+  console.info(`[LicenseMatch][${controller.traceId}] scan cancelled (${reason})`, { tabId });
+  return true;
+}
 
 function nextScanTrace(prefix = 'scan') {
   scanTraceCounter += 1;
@@ -1191,12 +1209,15 @@ async function loadScanEntryData(entry) {
  */
 async function fetchLicenses(text, sendProgress, options = {}) {
   const scanFilter = normalizeFilter(options.filter || currentScanFilter);
+  const throwIfCancelled = options.throwIfCancelled || (() => {});
   const originalSelected = text;
   // Ensure database initialized
   if (!(await isDatabaseInitialized())) {
     sendProgress({ checked: 0, total: 1, promising: 0, message: 'Initializing license database...' });
     await preloadLicenseDatabase();
   }
+
+  const prevTimeout = dmp.Diff_Timeout;
 
   try {
     // User settings
@@ -1281,6 +1302,7 @@ async function fetchLicenses(text, sendProgress, options = {}) {
 
     // approximate pass
     for (let i = 0; i < licenses.length; i += batchSize) {
+      throwIfCancelled();
       const batch = licenses.slice(i, i + batchSize);
       const batchResults = await Promise.all(batch.map(async (lic) => {
         try {
@@ -1448,7 +1470,6 @@ async function fetchLicenses(text, sendProgress, options = {}) {
     let effectiveDiffCap = Math.min(MAX_RESULTS * 2, dynamicMaxDiff, MAX_DIFF_CANDIDATES);
 
     // Prepare diff
-    const prevTimeout = dmp.Diff_Timeout;
     let baseDiffTimeout;
     if (selectedLength > CONFIG.scan.longText.length) baseDiffTimeout = 0.08;
     else if (selectedLength > CONFIG.scan.mediumText.length) baseDiffTimeout = 0.14;
@@ -1480,6 +1501,7 @@ async function fetchLicenses(text, sendProgress, options = {}) {
         message: `Refining 0/${cands.length}...`
       });
       for (let idx = 0; idx < cands.length; idx++) {
+        throwIfCancelled();
         if ((performance.now() - startDiffPhase) > DIFF_BUDGET_MS) {
           console.info('[LicenseMatch][Diff] Budget exceeded; stopping.');
           budgetExceeded = true;
@@ -1667,6 +1689,9 @@ async function fetchLicenses(text, sendProgress, options = {}) {
 
     return finalResults;
   } catch (err) {
+    // Bailing out mid-scan would otherwise leave the shared differ retuned.
+    dmp.Diff_Timeout = prevTimeout;
+    if (err instanceof ScanCancelledError) throw err;
     console.error('Error in fetchLicenses:', err);
     throw err;
   }
@@ -1697,8 +1722,11 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
     return;
   }
 
-  // Mark this tab as having an active scan
-  activeScans.add(tabId);
+  const controller = { cancelled: false, traceId };
+  activeScans.set(tabId, controller);
+  const throwIfCancelled = () => {
+    if (controller.cancelled) throw new ScanCancelledError(traceId);
+  };
 
   try {
     // Make sure content script is available
@@ -1731,7 +1759,12 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
     };
 
     // Fetch and compare licenses
-    const matches = await fetchLicenses(selectedText, sendProgress, { filter: normalizeFilter(scanFilter) });
+    const matches = await fetchLicenses(selectedText, sendProgress, {
+      filter: normalizeFilter(scanFilter),
+      throwIfCancelled
+    });
+
+    throwIfCancelled();
 
     if (matches && matches.length > 0) {
       matches.sort((a, b) => {
@@ -1752,6 +1785,7 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
 
       // Generate and stream display diffs one at a time
       for (const result of matches) {
+        throwIfCancelled();
         if (!result._licenseText) continue;
         const matchKey = `${result.source || 'licensedb'}:${result.license}`;
         let diff;
@@ -1780,25 +1814,42 @@ async function processLicenseCheck(tabId, selectedText, scanFilter = FILTER_OPTI
       });
     }
   } catch (error) {
-    console.error(`[LicenseMatch][${traceId}] Error processing license check:`, error);
-    try {
-      await sendMessageToTab(tabId, {
-        action: 'showError',
-        error: error.message || 'An unknown error occurred'
-      });
-    } catch (err) {
-      console.error('Error showing error notification:', err);
+    if (error instanceof ScanCancelledError) {
+      console.info(`[LicenseMatch][${traceId}] scan stopped after cancellation`, { tabId });
+    } else {
+      console.error(`[LicenseMatch][${traceId}] Error processing license check:`, error);
+      try {
+        await sendMessageToTab(tabId, {
+          action: 'showError',
+          error: error.message || 'An unknown error occurred'
+        });
+      } catch (err) {
+        console.error('Error showing error notification:', err);
+      }
     }
   } finally {
     const durationMs = (performance.now() - startedAt).toFixed(1);
     console.info(`[LicenseMatch][${traceId}] processLicenseCheck end`, { tabId, durationMs });
-    // Remove this tab from active scans
-    activeScans.delete(tabId);
+    // A cancelled scan may unwind after a replacement scan has registered.
+    if (activeScans.get(tabId) === controller) activeScans.delete(tabId);
   }
 }
 
 // Message listener
 ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.action === 'cancelScan') {
+    const tabId = sender?.tab?.id;
+    if (tabId) {
+      sendResponse({ cancelled: cancelScanForTab(tabId) });
+    } else {
+      ext.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const activeId = tabs?.[0]?.id;
+        sendResponse({ cancelled: activeId ? cancelScanForTab(activeId) : false });
+      });
+      return true;
+    }
+    return false;
+  }
   if (message?.action === 'openExternal' && typeof message.url === 'string') {
     ext.tabs.create({ url: message.url }).then(() => {
       sendResponse({ ok: true });
@@ -2369,6 +2420,15 @@ ext.action.onClicked.addListener(async (tab) => {
   const traceId = nextScanTrace('action');
   console.info(`[LicenseMatch][${traceId}] action icon clicked`, { tabId: tab?.id, filter: currentScanFilter });
   await handleActionClick(tab, currentScanFilter, traceId);
+});
+
+// A closed or navigated tab has no panel left to receive results.
+ext.tabs.onRemoved.addListener((tabId) => {
+  cancelScanForTab(tabId, 'tab closed');
+});
+
+ext.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === 'loading') cancelScanForTab(tabId, 'tab navigated');
 });
 
 async function initiateScanForActiveTab(filterChoice, traceId = nextScanTrace('start')) {

@@ -130,14 +130,19 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       try { ext.storage?.sync?.set({ theme }); } catch { /* ignore */ }
     }
 
+    // Closing the panel abandons the scan, so tell the background to stop work
+    // for this tab; otherwise the next scan is blocked until the old one ends.
+    function closePanel() {
+      setDisplay(uiContainer, 'none');
+      try { ext.runtime.sendMessage({ action: 'cancelScan' }); } catch { /* ignore */ }
+    }
+
     const closeButton = createEl('button');
     closeButton.className = 'license-diff-close';
     closeButton.innerText = '\u00d7';
     closeButton.setAttribute('aria-label', 'Close license comparison');
     closeButton.title = 'Close license comparison';
-    closeButton.addEventListener('click', () => {
-      setDisplay(uiContainer, 'none');
-    });
+    closeButton.addEventListener('click', closePanel);
     toolbar.appendChild(closeButton);
 
     const notificationsContainer = createEl('div');
@@ -722,7 +727,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       if ((uiContainer.style?.display || '') !== 'flex') return;
       if (!uiContainer.contains?.(document.activeElement)) return;
       if (e.key === 'Escape') {
-        setDisplay(uiContainer, 'none');
+        closePanel();
         return;
       }
       if (!changeAnchors.length) return;
