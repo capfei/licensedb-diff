@@ -20,5 +20,6 @@ export const SCAN_ENDPOINTS = Object.freeze({
   spdxLicensesJson: `${SPDX_LICENSES_BASE}/licenses.json`,
   spdxExceptionsJson: `${SPDX_LICENSES_BASE}/exceptions.json`,
   rulesIndexJson: `${RULES_INDEX_BASE}/rules-index.json`,
+  rulesIndexMetaJson: `${RULES_INDEX_BASE}/index.json`,
   scancodeRulesBase: SCANCODE_RULES_RAW
 });

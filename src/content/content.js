@@ -521,6 +521,11 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
       if (source === 'scancode-rule') return 'ScanCode Rule';
       return 'ScanCode';
     };
+    const getMatchSourceLabel = (match) => (
+      match.source === 'scancode-rule' && match.ruleType === 'notice'
+        ? 'ScanCode Notice'
+        : getSourceLabel(match.source)
+    );
 
     const escHtml = (value) => String(value ?? '')
       .replace(/&/g, '&amp;')
@@ -914,7 +919,7 @@ if (__LD_STATE__.initialized || __LD_STATE__.initializing) {
             const matchKey = `${m.source || 'licensedb'}:${m.license}`;
             m.matchKey = matchKey;
             const targetUrl = m.link || `https://scancode-licensedb.aboutcode.org/${m.license}.html`;
-            const sourceLabel = getSourceLabel(m.source);
+            const sourceLabel = getMatchSourceLabel(m);
             m.sourceLabel = sourceLabel;
 
             m.link = `<a href="${escAttr(targetUrl)}" target="_blank">${escHtml(m.name)}</a>

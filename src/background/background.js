@@ -593,9 +593,38 @@ async function markRulesInitialized(versionInfo = {}) {
   });
 }
 
+function promisifyTransaction(tx) {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Transaction aborted'));
+  });
+}
+
+// Returns the published index metadata, or null if it can't be fetched.
+async function fetchRulesIndexMeta(fetchOptions) {
+  try {
+    const resp = await fetch(SCAN_ENDPOINTS.rulesIndexMetaJson, fetchOptions);
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (err) {
+    console.warn('Could not fetch rules index metadata:', err);
+    return null;
+  }
+}
+
 async function syncRulesDatabase({ noCache = false } = {}) {
   console.log('Starting ScanCode rules sync...');
   const fetchOptions = noCache ? { cache: 'no-cache' } : undefined;
+
+  // Skip the full download when the published rules haven't changed.
+  const status = await getStoreRecord('status', 'rules_initialization');
+  const remoteMeta = await fetchRulesIndexMeta(fetchOptions);
+  if (status?.completed && remoteMeta?.contentHash && status.contentHash === remoteMeta.contentHash) {
+    console.log(`Rules index unchanged (${remoteMeta.version}); skipping download.`);
+    return;
+  }
+
   const resp = await fetch(SCAN_ENDPOINTS.rulesIndexJson, fetchOptions);
   if (!resp.ok) throw new Error(`Failed to fetch rules index: ${resp.statusText}`);
   const data = await resp.json();
@@ -603,19 +632,7 @@ async function syncRulesDatabase({ noCache = false } = {}) {
   const rules = Array.isArray(data.rules) ? data.rules : [];
   console.log(`Fetched ${rules.length} rules (version ${data.version}, commit ${data.sourceCommit?.slice(0, 8)})`);
 
-  // Store the lightweight index (without text) for getCombinedScanIndex
-  const rulesIndexEntries = rules.map(r => ({
-    id: r.id,
-    license_key: r.license_key,
-    name: r.name,
-    spdx_license_key: r.spdx_license_key,
-    category: r.category,
-    is_deprecated: r.is_deprecated || false,
-    relevance: r.relevance
-  }));
-  await setMetadataEntry('rules_index', rulesIndexEntries);
-
-  // Store full rule data + vectors in IndexedDB
+  // Store full rule data + vectors, one transaction per batch.
   const db = await openDatabase();
   const batchSize = 100;
   let processed = 0;
@@ -623,45 +640,103 @@ async function syncRulesDatabase({ noCache = false } = {}) {
 
   for (let i = 0; i < rules.length; i += batchSize) {
     const batch = rules.slice(i, Math.min(i + batchSize, rules.length));
+    const records = [];
     for (const rule of batch) {
       try {
         const storeKey = `rule:${rule.id}`;
         const text = normalizeLicenseText(rule.text || '');
-        const ruleData = {
-          id: rule.id,
-          license_key: rule.license_key,
-          name: rule.name,
-          spdx_license_key: rule.spdx_license_key,
-          text
-        };
-
-        const ruleTx = db.transaction(['rules'], 'readwrite');
-        await promisifyRequest(ruleTx.objectStore('rules').put({ rule_id: storeKey, data: ruleData }));
-
-        if (text) {
-          const vector = createTextVector(text);
-          const vecTx = db.transaction(['rule_vectors'], 'readwrite');
-          await promisifyRequest(vecTx.objectStore('rule_vectors').put({ rule_id: storeKey, data: vector }));
-        }
+        records.push({
+          storeKey,
+          ruleData: {
+            id: rule.id,
+            rule_type: rule.rule_type || 'text',
+            license_key: rule.license_key,
+            license_expression: rule.license_expression || null,
+            name: rule.name,
+            spdx_license_key: rule.spdx_license_key,
+            spdx_license_expression: rule.spdx_license_expression || null,
+            text
+          },
+          vector: text ? createTextVector(text) : null
+        });
       } catch (err) {
         failures++;
         console.error(`Error processing rule ${rule.id}:`, err);
       }
     }
+
+    try {
+      const tx = db.transaction(['rules', 'rule_vectors'], 'readwrite');
+      const done = promisifyTransaction(tx);
+      const ruleStore = tx.objectStore('rules');
+      const vectorStore = tx.objectStore('rule_vectors');
+      for (const { storeKey, ruleData, vector } of records) {
+        ruleStore.put({ rule_id: storeKey, data: ruleData });
+        if (vector) vectorStore.put({ rule_id: storeKey, data: vector });
+        else vectorStore.delete(storeKey);
+      }
+      await done;
+    } catch (err) {
+      failures += records.length;
+      console.error(`Error storing rules batch starting at ${i}:`, err);
+    }
     processed += batch.length;
+  }
+
+  // Store the lightweight index (without text) for getCombinedScanIndex
+  const rulesIndexEntries = rules.map(r => ({
+    id: r.id,
+    rule_type: r.rule_type || 'text',
+    license_key: r.license_key,
+    license_expression: r.license_expression || null,
+    name: r.name,
+    spdx_license_key: r.spdx_license_key,
+    spdx_license_expression: r.spdx_license_expression || null,
+    category: r.category,
+    is_deprecated: r.is_deprecated || false,
+    relevance: r.relevance
+  }));
+  await setMetadataEntry('rules_index', rulesIndexEntries);
+
+  // Remove rules that are no longer in the published index.
+  let removed = 0;
+  try {
+    const keep = new Set(rules.map(r => `rule:${r.id}`));
+    const readTx = db.transaction(['rules', 'rule_vectors'], 'readonly');
+    const [ruleKeys, vectorKeys] = await Promise.all([
+      promisifyRequest(readTx.objectStore('rules').getAllKeys()),
+      promisifyRequest(readTx.objectStore('rule_vectors').getAllKeys())
+    ]);
+    const staleRules = ruleKeys.filter(key => !keep.has(key));
+    const staleVectors = vectorKeys.filter(key => !keep.has(key));
+    if (staleRules.length || staleVectors.length) {
+      const tx = db.transaction(['rules', 'rule_vectors'], 'readwrite');
+      const done = promisifyTransaction(tx);
+      for (const key of staleRules) tx.objectStore('rules').delete(key);
+      for (const key of staleVectors) tx.objectStore('rule_vectors').delete(key);
+      await done;
+    }
+    removed = staleRules.length;
+  } catch (err) {
+    console.error('Error removing stale rules:', err);
   }
 
   // Invalidate caches
   licenseVectorsCache = null;
   docFreqCache = null;
+  for (const key of Object.keys(licenseShingleCache)) {
+    if (key.startsWith('rule:')) delete licenseShingleCache[key];
+  }
 
   await markRulesInitialized({
     version: data.version,
     sourceCommit: data.sourceCommit,
+    // Only record the hash after a clean sync, so failed rules are retried next time.
+    contentHash: failures ? null : (data.contentHash || null),
     rulesCount: rules.length
   });
 
-  console.log(`Rules sync complete. Processed ${processed} rules with ${failures} failures.`);
+  console.log(`Rules sync complete. Processed ${processed} rules with ${failures} failures; removed ${removed} stale rules.`);
 }
 
 async function ensureRulesDataInitialized() {
@@ -1086,7 +1161,9 @@ let docFreqCache = null;          // { term: documentFrequency }
 let totalDocsCache = 0;
 const licenseShingleCache = {};   // { license_key: Set<string> }
 
-// Build document frequency map from all license vectors (presence-based)
+// Build document frequency map from canonical license vectors (presence-based).
+// Rule vectors are excluded: there are several times more rules than licenses, and
+// their repeated notice wording would otherwise skew term weights for every scan.
 async function buildDocFreq() {
   if (docFreqCache) return docFreqCache;
   await loadAllVectors();
@@ -1094,6 +1171,7 @@ async function buildDocFreq() {
   const seen = licenseVectorsCache || {};
   totalDocsCache = 0;
   for (const lic in seen) {
+    if (lic.startsWith('rule:')) continue;
     const vec = seen[lic];
     if (!vec) continue;
     totalDocsCache++;
@@ -1263,8 +1341,9 @@ async function getCombinedScanIndex(scanFilter, { includeDeprecated = false, sca
           key: r.id,
           storeKey: `rule:${r.id}`,
           isException: false,
-          spdx: r.spdx_license_key || r.license_key,
+          spdx: r.spdx_license_expression || r.spdx_license_key || r.license_key,
           licenseKey: r.license_key,
+          ruleType: r.rule_type || 'text',
           raw: r
         }));
     }
@@ -1282,7 +1361,7 @@ async function loadScanEntryData(entry) {
         key: entry.storeKey,
         license: ruleId,
         name: `${existing.data.name || entry.raw?.name || entry.raw?.license_key || ruleId} (${ruleId})`,
-        spdx: entry.spdx || entry.raw?.spdx_license_key || entry.raw?.license_key || ruleId,
+        spdx: entry.spdx || existing.data.spdx_license_expression || entry.raw?.spdx_license_key || entry.raw?.license_key || ruleId,
         text: normalizeLicenseText(existing.data.text)
       };
     }
@@ -1753,6 +1832,7 @@ async function fetchLicenses(text, sendProgress, options = {}) {
               name: cand.name,
               spdx: cand.spdx,
               source: cand.source || SOURCES.LICENSEDB,
+              ruleType: cand.source === SOURCES.RULES ? (cand.entry?.ruleType || 'text') : undefined,
               deprecated: !!(cand.entry?.raw?.is_deprecated || cand.entry?.raw?.isDeprecatedLicenseId),
               charSimilarity: finalScore.toFixed(2),
               diff: null,
