@@ -1,5 +1,6 @@
 import { SCAN_DEFAULTS } from "../../shared/scan-defaults.js";
 import { UI_DEFAULTS } from "../../shared/ui-defaults.js";
+import ext from "../../shared/ext-api.js";
 
 document.addEventListener('DOMContentLoaded', async function() {
   // Initialize UI
@@ -30,7 +31,7 @@ const DEFAULT_APPEARANCE = { theme: UI_DEFAULTS.theme };
 function storageGet(keysWithDefaults) {
   return new Promise((resolve) => {
     try {
-      chrome.storage.sync.get(keysWithDefaults, (items) => resolve(items || keysWithDefaults));
+      ext.storage.sync.get(keysWithDefaults, (items) => resolve(items || keysWithDefaults));
     } catch {
       resolve(keysWithDefaults);
     }
@@ -40,9 +41,9 @@ function storageGet(keysWithDefaults) {
 function storageSet(obj) {
   return new Promise((resolve, reject) => {
     try {
-      chrome.storage.sync.set(obj, () => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
+      ext.storage.sync.set(obj, () => {
+        if (ext.runtime.lastError) {
+          reject(new Error(ext.runtime.lastError.message));
         } else {
           resolve(true);
         }
@@ -69,7 +70,7 @@ async function loadUserSettingsToForm() {
 
 async function saveUserSettingsFromForm() {
   const statusEl = document.getElementById('save-status');
-  statusEl.textContent = '';
+  setSaveStatus(statusEl, '', null);
 
   let maxResults = parseInt(document.getElementById('max-results').value, 10);
   let minSimilarityPct = Number(document.getElementById('min-similarity').value);
@@ -83,19 +84,30 @@ async function saveUserSettingsFromForm() {
 
   try {
     await storageSet({ maxResults, minSimilarityPct });
-    statusEl.style.color = '#4CAF50';
-    statusEl.textContent = 'Saved';
-    setTimeout(() => (statusEl.textContent = ''), 1500);
+    setSaveStatus(statusEl, 'Saved', 'is-ok');
+    setTimeout(() => setSaveStatus(statusEl, '', null), 1500);
   } catch (e) {
-    statusEl.style.color = '#dc3545';
-    statusEl.textContent = 'Error saving';
+    setSaveStatus(statusEl, 'Error saving', 'is-error');
   }
+}
+
+function applyTheme(theme) {
+  document.body.classList.toggle('theme-dark', theme === 'dark');
+}
+
+function setSaveStatus(el, text, state) {
+  if (!el) return;
+  el.classList.remove('is-ok', 'is-error');
+  if (state) el.classList.add(state);
+  el.textContent = text;
 }
 
 async function loadThemeToForm() {
   const { theme } = await storageGet(DEFAULT_APPEARANCE);
   const sel = document.getElementById('theme-select');
-  if (sel) sel.value = (theme === 'dark' ? 'dark' : 'light');
+  const resolved = theme === 'dark' ? 'dark' : 'light';
+  if (sel) sel.value = resolved;
+  applyTheme(resolved);
 }
 
 async function saveThemeFromForm() {
@@ -104,16 +116,11 @@ async function saveThemeFromForm() {
   const value = sel?.value === 'dark' ? 'dark' : 'light';
   try {
     await storageSet({ theme: value });
-    if (statusEl) {
-      statusEl.style.color = '#4CAF50';
-      statusEl.textContent = 'Saved';
-      setTimeout(() => (statusEl.textContent = ''), 1500);
-    }
+    applyTheme(value);
+    setSaveStatus(statusEl, 'Saved', 'is-ok');
+    setTimeout(() => setSaveStatus(statusEl, '', null), 1500);
   } catch {
-    if (statusEl) {
-      statusEl.style.color = '#dc3545';
-      statusEl.textContent = 'Error';
-    }
+    setSaveStatus(statusEl, 'Error', 'is-error');
   }
 }
 
@@ -134,12 +141,13 @@ async function loadDatabaseInfo() {
       document.getElementById('rules-version').textContent = info.rulesVersion || 'Not available';
       
       const dbStatus = document.getElementById('db-status');
+      dbStatus.classList.remove('is-ok', 'is-error');
       if (info.isInitialized) {
         dbStatus.textContent = 'Initialized';
-        dbStatus.style.color = '#4CAF50';
+        dbStatus.classList.add('is-ok');
       } else {
         dbStatus.textContent = 'Not initialized';
-        dbStatus.style.color = '#dc3545';
+        dbStatus.classList.add('is-error');
       }
     }
   } catch (error) {
@@ -170,14 +178,14 @@ async function refreshDatabase() {
     updateStatus.textContent = 'Starting database update...';
     
     // Listen for progress updates
-    chrome.runtime.onMessage.addListener(function progressListener(message) {
+    ext.runtime.onMessage.addListener(function progressListener(message) {
       if (message.action === 'updateProgress') {
         progressBar.style.width = `${message.progress}%`;
         updateStatus.textContent = message.message;
         
         // If complete, remove listener
         if (message.progress >= 100 || message.complete) {
-          chrome.runtime.onMessage.removeListener(progressListener);
+          ext.runtime.onMessage.removeListener(progressListener);
         }
       }
     });
@@ -219,14 +227,14 @@ async function resetDatabase() {
       updateStatus.textContent = 'Resetting database...';
       
       // Listen for progress updates
-      chrome.runtime.onMessage.addListener(function progressListener(message) {
+      ext.runtime.onMessage.addListener(function progressListener(message) {
         if (message.action === 'updateProgress') {
           progressBar.style.width = `${message.progress}%`;
           updateStatus.textContent = message.message;
           
           // If complete, remove listener
           if (message.progress >= 100 || message.complete) {
-            chrome.runtime.onMessage.removeListener(progressListener);
+            ext.runtime.onMessage.removeListener(progressListener);
           }
         }
       });
@@ -253,9 +261,9 @@ async function resetDatabase() {
 // Helper function to send messages to the background script
 function sendMessageToBackground(message) {
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, response => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
+    ext.runtime.sendMessage(message, response => {
+      if (ext.runtime.lastError) {
+        reject(new Error(ext.runtime.lastError.message));
         return;
       }
       if (response && response.error) {
